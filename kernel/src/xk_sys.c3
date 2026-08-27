@@ -12,6 +12,7 @@ const uint SYS_GETPID  = 2;
 const uint SYS_TICKS   = 3;
 const uint SYS_UMSG    = 10;  // ring-3: print a banner (no user pointers)
 const uint SYS_EXIT    = 12;  // ring-3: return to ring 0 (resume the desktop)
+const uint SYS_RESULT  = 20;  // ring-3: report a computed result (arg1)
 
 extern fn ulong xk_syscall(ulong n, ulong a, ulong b, ulong c);
 extern fn void xk_iret_ring0(ulong target);
@@ -24,6 +25,14 @@ fn ulong sys_dispatch(IntFrame* f)
     else if (n == SYS_GETPID) { return (ulong)g_tasks[g_current].pid; }
     else if (n == SYS_TICKS)  { return g_ticks; }
     else if (n == SYS_UMSG)   { xk_puts("[user] hello from ring 3 (syscall)\r\n"); return 0; }
+    else if (n == SYS_RESULT)
+    {
+        // The ring-3 process computed a value and passes it back to the kernel.
+        xk_puts("[user] ring-3 computed result = ");
+        xk_putdec((int)f.rbx);
+        xk_puts("\r\n");
+        return f.rbx;   // return the same value (accessible via iretq)
+    }
     else if (n == SYS_EXIT)
     {
         // Hand control back to ring-0 by simply CALLING the resume path from
