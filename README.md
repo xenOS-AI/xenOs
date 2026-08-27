@@ -79,9 +79,16 @@ kernel/
     xk_shell.c3      command interpreter + tiny VFS catalog
     xk_mem.c3        freestanding memset/memcpy/memmove/memcmp
 tools/
-  mkfont.py        builds kernel/src/xk_font.c3 from a hand-drawn 8x8 font
-  mkdisk.py        assembles the bootable disk image
+  mkfont.py    builds kernel/src/xk_font.c3 from a hand-drawn 8x8 font
+                (dev-time only; xk_font.c3 is committed so the build needs no Python)
+  host_start.asm  freestanding host runtime (_start + Linux syscalls) for the C3 tools
+  mkdisk.c3    C3 host tool: assembles the bootable disk image (no libc)
+  mkbin.c3     C3 host tool: embeds the ring-3 program as xk_uprog.c3 (no libc)
 ```
+The build pipeline itself is hand-written C3 too: `mkdisk.c3` and `mkbin.c3`
+are freestanding host programs (no libc) that build.sh compiles and links; the
+only external tools are the compiler/assembler/linker (`c3c`, `nasm`, `ld`,
+`objcopy`), which no OS can avoid. `python3` is not used by the build.
 
 Memory map (physical): stage1 @0x7C00, BootInfo @0x7000, stage2 @0x8000, page
 tables/GDT @0x9000–0xF000, kernel stack @0x90000, kernel @0x100000, task stacks
