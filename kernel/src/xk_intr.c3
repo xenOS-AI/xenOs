@@ -92,6 +92,21 @@ fn void irq_other(IntFrame* f)
 
 fn void xk_fault(uint v, IntFrame* f)
 {
+    // A fault in user mode means the ring-3 program violated the CPU protection
+    // rules (e.g. touched a supervisor page or ran a privileged instruction).
+    // Terminate it gracefully and return to the ring-0 desktop.
+    if (((uint)f.cs & 3) == 3)
+    {
+        xk_puts("\r\n[protect] ring-3 fault v=");
+        xk_putdec((int)v);
+        xk_puts(" rip=");
+        xk_puthex(f.rip);
+        xk_puts(" cr2=");
+        xk_puthex(xk_read_cr2());
+        xk_puts(" -> user program terminated by the kernel\r\n");
+        umode_resume();          // never returns
+        return;
+    }
     xk_puts("\r\n*** EXCEPTION vector=");
     xk_putdec((int)v);
     xk_puts(" err=");
