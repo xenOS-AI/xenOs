@@ -140,8 +140,9 @@ fn void xk_intr_init()
     {
         idt_set(&g_idt, i, stubs[i], KERNEL_CODE64, 0x8E);
     }
-    // vector 128 = INT 0x80 (system-call gate) lives at stub_table[48]
-    idt_set(&g_idt, 128, stubs[IDT_STUBS], KERNEL_CODE64, 0x8E);
+    // vector 128 = INT 0x80 (system-call gate) lives at stub_table[48];
+    // DPL=3 (0xEE) so ring-3 programs may invoke it.
+    idt_set(&g_idt, 128, stubs[IDT_STUBS], KERNEL_CODE64, 0xEE);
     xk_lidt((ulong)&g_idt, (ushort)(IDT_TOTAL * 16 - 1));
 
     xk_pic_init();

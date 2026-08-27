@@ -255,6 +255,42 @@ xk_syscall:
     ret
 
 ;==============================================================================
+; void xk_enter_ring3(ulong entry, ulong user_sp)
+; iretq from ring 0 to ring 3, dropping into `entry` with user stack `user_sp`.
+; Segment selectors: 0x2B = user code64 (idx5)|3, 0x33 = user data64 (idx6)|3.
+global xk_enter_ring3
+xk_enter_ring3:
+    mov rax, rdi          ; entry (rip)
+    mov rcx, rsi          ; user stack pointer (rsp)
+    mov r11, 0x202        ; rflags: IF on, reserved bits
+    push 0x33             ; SS  (user data, RPL3) -- deepest
+    push rcx              ; RSP (user stack)
+    push r11              ; RFLAGS
+    push 0x2B             ; CS  (user code, RPL3)
+    push rax              ; RIP (entry) -- top
+    iretq
+    hlt                   ; never reached
+
+; Flush the entire TLB by reloading CR3.
+global xk_reload_cr3
+xk_reload_cr3:
+    mov rax, cr3
+    mov cr3, rax
+    ret
+
+; void xk_iret_ring0(ulong target)
+; Build a clean same-privilege ring-0 iretq frame (RIP,CS=0x18,RFLAGS) and
+; iretq into `target` on the current (kernel) stack. NEVER returns.
+global xk_iret_ring0
+xk_iret_ring0:
+    mov rax, rdi          ; target (rip)
+    push 0x202            ; rflags (IF on) -- deepest
+    push 0x18             ; ring-0 code64 cs
+    push rax              ; rip -- top
+    iretq
+    hlt                   ; never reached
+
+;==============================================================================
 ; Preemptive context switch driven from inside the timer ISR.
 ;   void xk_preempt(ulong* cur_slot, ulong cur_frame, ulong next_sp)
 ;   rdi = addr of a slot to save the CURRENT task's interrupt-frame pointer.

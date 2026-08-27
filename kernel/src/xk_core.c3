@@ -138,6 +138,14 @@ fn void xk_boot()
     thread_spawn_demos();
 
     xk_puts("[kernel] init ok. graphical desktop ready\r\n");
+    umode_setup();
+    umode_enter();             // -> ring-3 demo; SYS_EXIT lands in umode_resume()
+    while (true) { xk_hlt(); } // unreachable: ring-3 demo resumes the desktop
+}
+
+// The cooperative desktop loop (started by umode_resume after the ring-3 demo).
+fn void xk_idle_loop()
+{
     while (true)
     {
         thread_yield();         // cooperative multitasking with task slots 1+
