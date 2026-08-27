@@ -33,10 +33,10 @@ and a shell — with **zero borrowed code**.
 * Freestanding `memset/memcpy/memmove/memcmp` exported under exact linker names.
 
 ## Known limitations
-- **Shared page tables**: the ring-3 demo reuses the boot identity map, marking
-  the upper PML4/PDPT entries U/S, so the whole first GiB is technically
-  user-accessible. Real per-process isolation needs per-process page tables
-  (CR3 per task), which is future work.
+- **Page tables are shared with the kernel** but isolation still holds: ring-3
+  CANNOT reach kernel pages because their PDEs have U/S=0 (verified: a ring-3
+  write to 0x100000 #PFs and the kernel terminates the program). Full
+  per-process address spaces (a distinct CR3 per process) are future work.
 - **Cooperative scheduler**: tasks yield voluntarily (a timer-IRET preemptive
   variant failed under QEMU 11's IRET/RSP handling and was reverted).
 
