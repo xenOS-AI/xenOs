@@ -83,6 +83,44 @@ const int TERM_H = TERM_RW * 8 + TITLE_H + 8;
 char[TERM_CW * TERM_RW] term_buf;
 int term_row;
 int term_col;
+char[TERM_CW] term_cmd;   // current command line (shell)
+int term_cmd_len;
+
+// render a string into the terminal grid AND mirror it to serial (headless).
+fn void term_puts(char* s)
+{
+    while (*s != 0)
+    {
+        char c = *s;
+        term_put(c);
+        if (c == '\n') { xk_serial_putc('\r'); xk_serial_putc('\n'); }
+        else { xk_serial_putc(c); }
+        s++;
+    }
+}
+
+fn void term_putdec(int v)
+{
+    char[16] b;
+    int n = 0;
+    if (v == 0) { term_put('0'); xk_serial_putc('0'); return; }
+    if (v < 0)  { term_put('-'); xk_serial_putc('-'); v = -v; }
+    while (v > 0) { b[n] = (char)('0' + (v % 10)); n++; v /= 10; }
+    for (int i = n - 1; i >= 0; i--) { term_put(b[i]); xk_serial_putc(b[i]); }
+}
+
+fn void term_clear()
+{
+    for (int i = 0; i < TERM_CW * TERM_RW; i++)
+    {
+        term_buf[i] = 0;
+    }
+    term_row = 0;
+    term_col = 0;
+    term_cmd_len = 0;
+    term_cmd[0] = 0;
+    term_put('>');
+}
 
 fn void app_term_draw(Window* w)
 {
@@ -106,10 +144,31 @@ fn void app_term_draw(Window* w)
 
 fn void app_term_key(Window* w, char c)
 {
-    term_put(c);
-    // redraw just the affected line(s) and blit them
-    int ox = w.x + 4;
-    int oy = w.y + TITLE_H + 4;
+    if (c == '\n' || c == '\r')
+    {
+        term_cmd[term_cmd_len] = 0;
+        term_put('\n');
+        if (term_cmd_len > 0) shell_run(&term_cmd[0]);
+        term_cmd_len = 0;
+        term_cmd[0] = 0;
+        term_put('>');
+    }
+    else if (c == 0x08)
+    {
+        if (term_cmd_len > 0)
+        {
+            term_cmd_len--;
+            term_cmd[term_cmd_len] = 0;
+            term_put(0x08);
+        }
+    }
+    else if (c >= 0x20 && c <= 0x7E)
+    {
+        if (term_cmd_len < TERM_CW - 1) term_cmd[term_cmd_len++] = c;
+        term_put(c);
+    }
+    // re-render the terminal into the shadow buffer, then blit the damaged region
+    app_term_draw(w);
     fb_blit_rect(w.x + 4, w.y + TITLE_H + 4, w.w - 8, (term_row + 1) * 8);
 }
 
@@ -168,8 +227,9 @@ fn void wm_register_apps()
     xk_ws[t].key = &app_term_key;
     xmcopy(&title_term[0], &xk_ws[t].title[0]);
     xk_active = t;
-    term_buf[0] = '>';   // prompt
-    term_col = 1;
+    shell_banner();      // welcome text into the terminal (also serial)
+    term_cmd_len = 0;
+    term_put('>');       // initial prompt
 
     int c = wm_alloc();
     xk_ws[c].x = 560; xk_ws[c].y = 40;
