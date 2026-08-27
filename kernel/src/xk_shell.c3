@@ -63,7 +63,7 @@ fn void vfs_cat(char* name)
 // ---- built-in commands ----
 fn void shell_help()
 {
-    term_puts("built-ins: help ls cat <file> echo <text> clear about uname ps sysc\r\n");
+    term_puts("built-ins: help ls cat <file> echo <text> clear about uname ps sysc mem\r\n");
 }
 
 fn void shell_about()
@@ -105,6 +105,28 @@ fn void shell_run(char* line)
     else if (streq(&cmd[0], "uname")) { term_puts("xenOS kernel 0.1 x86_64\r\n"); }
     else if (streq(&cmd[0], "ps"))    { shell_ps(); }
     else if (streq(&cmd[0], "clear")) { term_clear(); }
+    else if (streq(&cmd[0], "mem"))
+    {
+        int total = (int)g_total_frames;
+        int used  = (int)g_used_frames;
+        term_puts("frame allocator (4 KiB):\r\n");
+        term_puts("  total frames = "); term_putdec(total);
+        term_puts("  used = "); term_putdec(used);
+        term_puts("  free = "); term_putdec(total - used);
+        term_puts("\r\n");
+        ulong p = frame_alloc();
+        term_puts("  alloc page @ "); term_puthex(p); term_puts("\r\n");
+        if (p != 0)
+        {
+            ((char*)p)[0] = (char)0x5A;
+            ((char*)p)[4095] = (char)0x5A;
+            term_puts("  write/read-back byte0 = ");
+            term_putdec((int)((char*)p)[0]);
+            term_puts("\r\n");
+            frame_free(p);
+        }
+        term_puts("  after free, used = "); term_putdec((int)g_used_frames); term_puts("\r\n");
+    }
     else if (streq(&cmd[0], "sysc"))
     {
         term_puts("syscalls via INT 0x80:\r\n");

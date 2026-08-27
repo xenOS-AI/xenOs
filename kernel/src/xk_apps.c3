@@ -109,6 +109,19 @@ fn void term_putdec(int v)
     for (int i = n - 1; i >= 0; i--) { term_put(b[i]); xk_serial_putc(b[i]); }
 }
 
+fn void term_puthex(ulong v)
+{
+    term_put('0'); xk_serial_putc('0');
+    term_put('x'); xk_serial_putc('x');
+    for (int shift = 60; shift >= 0; shift -= 4)
+    {
+        int d = (int)((v >> shift) & 0xF);
+        char c = (char)(d < 10 ? ('0' + d) : ('a' + (d - 10)));
+        term_put(c);
+        xk_serial_putc(c);
+    }
+}
+
 fn void term_clear()
 {
     for (int i = 0; i < TERM_CW * TERM_RW; i++)

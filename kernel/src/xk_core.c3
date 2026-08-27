@@ -120,6 +120,13 @@ fn void xk_boot()
         xk_puts("[display] no usable framebuffer; serial console only\r\n");
     }
 
+    frame_init();
+    xk_puts("[mem] frame allocator: ");
+    xk_putdec((int)g_total_frames);
+    xk_puts(" frames, ");
+    xk_putdec((int)g_used_frames);
+    xk_puts(" used\r\n");
+
     xk_intr_init();
     xk_kbd_init();
     xk_mouse_init();
