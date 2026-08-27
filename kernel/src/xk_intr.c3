@@ -12,10 +12,13 @@ struct IdtEntry
 }
 
 // ---- Interrupt frame as pushed by isr_common (asm_runtime.asm) ----
+// isr_common pushes GPRs rax..r15 in that order, so the LAST push (r15) sits
+// at the lowest address (offset 0); the GPR fields below are therefore in
+// reverse order. vector/error_code/rip/cs/rflags follow from the stub+CPU.
 struct IntFrame
 {
-    ulong rax, rbx, rcx, rdx, rsi, rdi, rbp;
-    ulong r8, r9, r10, r11, r12, r13, r14, r15;
+    ulong r15, r14, r13, r12, r11, r10, r9, r8;
+    ulong rbp, rdi, rsi, rdx, rcx, rbx, rax;
     ulong vector;
     ulong error_code;
     ulong rip, cs, rflags;
@@ -25,8 +28,9 @@ struct IntFrame
 extern fn ulong* xk_get_stub_table();
 // xk_lidt / xk_lgdt / xk_ltr / xk_sti / xk_cli / xk_hlt declared in xk_core.c3
 
-const int IDT_COUNT = 48;
-IdtEntry[IDT_COUNT] g_idt;          // BSS (zeroed at kernel entry)
+const int IDT_STUBS = 48;       // vectors 0..47 have stubs
+const int IDT_TOTAL = 129;      // index space up to INT 0x80 (128)
+IdtEntry[IDT_TOTAL] g_idt;      // BSS (zeroed at kernel entry)
 const ushort KERNEL_CODE64 = 0x18;  // code64 selector from the boot GDT
 
 // IRQ dispatch table (16 entries).
@@ -105,6 +109,12 @@ fn void xk_fault(uint v, IntFrame* f)
 fn void xk_handle_isr(IntFrame* f) @export("xk_handle_isr")
 {
     uint v = (uint)f.vector;
+    if (v == 128)
+    {
+        // system call (INT 0x80): result returned in the frame's rax
+        f.rax = sys_dispatch(f);
+        return;
+    }
     if (v < 32)
     {
         xk_fault(v, f);
@@ -127,11 +137,13 @@ fn void xk_intr_init()
 {
     // Build the IDT from the assembly stub table (selector = code64).
     ulong* stubs = xk_get_stub_table();
-    for (int i = 0; i < IDT_COUNT; i++)
+    for (int i = 0; i < IDT_STUBS; i++)
     {
         idt_set(&g_idt, i, stubs[i], KERNEL_CODE64, 0x8E);
     }
-    xk_lidt((ulong)&g_idt, (ushort)(IDT_COUNT * 16 - 1));
+    // vector 128 = INT 0x80 (system-call gate) lives at stub_table[48]
+    idt_set(&g_idt, 128, stubs[IDT_STUBS], KERNEL_CODE64, 0x8E);
+    xk_lidt((ulong)&g_idt, (ushort)(IDT_TOTAL * 16 - 1));
 
     xk_pic_init();
     xk_pit_init(100);

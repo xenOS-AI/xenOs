@@ -22,6 +22,8 @@ and a shell — with **zero borrowed code**.
 * GUI apps: an animated demo window and a clock, and a **terminal window
   running an interactive shell** (`sh`) with `ls/cat/echo/help/about/uname/ps/clear`.
 * A tiny in-memory **VFS** with a few files.
+* **Syscalls** via an `int 0x80` gate (vector 128): `getpid`, `ticks`, `puts`
+  (exercised by the shell's `sysc` builtin) — the ABI future ring-3 processes use.
 * Freestanding `memset/memcpy/memmove/memcmp` exported under exact linker names.
 
 ## Build & run

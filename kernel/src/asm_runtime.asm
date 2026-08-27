@@ -175,6 +175,13 @@ isr_common:
 %assign vec vec+1
 %endrep
 
+; System-call gate: INT 0x80 (vector 128).
+global isr_stub_128
+isr_stub_128:
+    push qword 0
+    push qword 128
+    jmp isr_common
+
 ; Stub address table so C3 can build the IDT.
 section .data
 align 16
@@ -185,6 +192,7 @@ stub_table:
     dq isr_stub_%+vec
 %assign vec vec+1
 %endrep
+    dq isr_stub_128       ; vector 128 (INT 0x80) -> table index 48
 
 section .text
 ; ulong* xk_get_stub_table(void)
@@ -228,4 +236,20 @@ xk_switch:
     pop r12
     pop rbp
     pop rbx
+    ret
+
+; ulong xk_syscall(ulong n, ulong a, ulong b, ulong c)
+; ABI into INT 0x80: rax=n, rbx=a, rcx=b, rdx=c; result back in rax.
+; rbx is CALLEE-SAVED, so save/restore the caller's value (the asm gate only
+; restores the value we set, not the caller's).
+global xk_syscall
+xk_syscall:
+    push rbx              ; preserve the caller's rbx
+    mov rax, rdi          ; n
+    mov rbx, rsi          ; a
+    mov r9,  rdx          ; save b
+    mov rdx, rcx          ; c -> rdx
+    mov rcx, r9           ; b -> rcx
+    int 0x80
+    pop rbx               ; restore the caller's rbx
     ret

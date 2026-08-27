@@ -63,7 +63,7 @@ fn void vfs_cat(char* name)
 // ---- built-in commands ----
 fn void shell_help()
 {
-    term_puts("built-ins: help ls cat <file> echo <text> clear about uname ps\r\n");
+    term_puts("built-ins: help ls cat <file> echo <text> clear about uname ps sysc\r\n");
 }
 
 fn void shell_about()
@@ -105,6 +105,17 @@ fn void shell_run(char* line)
     else if (streq(&cmd[0], "uname")) { term_puts("xenOS kernel 0.1 x86_64\r\n"); }
     else if (streq(&cmd[0], "ps"))    { shell_ps(); }
     else if (streq(&cmd[0], "clear")) { term_clear(); }
+    else if (streq(&cmd[0], "sysc"))
+    {
+        term_puts("syscalls via INT 0x80:\r\n");
+        term_puts("  getpid -> ");
+        term_putdec(sys_getpid());
+        term_puts("\r\n");
+        sys_puts("  SYS_PUTS wrote this to serial\r\n");
+        term_puts("  ticks  -> ");
+        term_putdec((int)sys_ticks());
+        term_puts("\r\n");
+    }
     else
     {
         term_puts("sh: unknown command: ");
