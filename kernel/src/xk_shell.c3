@@ -63,7 +63,7 @@ fn void vfs_cat(char* name)
 // ---- built-in commands ----
 fn void shell_help()
 {
-    term_puts("built-ins: help ls cat <file> echo <text> clear about uname ps sysc mem\r\n");
+    term_puts("built-ins: help ls cat <file> echo <text> clear about uname ps sysc mem heap\r\n");
 }
 
 fn void shell_about()
@@ -126,6 +126,26 @@ fn void shell_run(char* line)
             frame_free(p);
         }
         term_puts("  after free, used = "); term_putdec((int)g_used_frames); term_puts("\r\n");
+    }
+    else if (streq(&cmd[0], "heap"))
+    {
+        term_puts("kernel heap: in use = "); term_putdec((int)heap_bytes_in_use); term_puts(" bytes\r\n");
+        void* a = kmalloc(64);
+        void* b = kmalloc(2048);
+        void* c = kmalloc(4000);
+        term_puts("  a@"); term_puthex((ulong)a);
+        term_puts(" b@"); term_puthex((ulong)b);
+        term_puts(" c@"); term_puthex((ulong)c);
+        term_puts(" (in use "); term_putdec((int)heap_bytes_in_use); term_puts(")\r\n");
+        if (a != null) { memset(a, (int)0xAB, 64);    term_puts("  a[63]="); term_putdec((int)((char*)a)[63]); }
+        if (b != null) { memset(b, (int)0xCD, 2048);  term_puts("  b[2047]="); term_putdec((int)((char*)b)[2047]); }
+        if (c != null) { memset(c, (int)0xEF, 4000);  term_puts("  c[3999]="); term_putdec((int)((char*)c)[3999]); }
+        term_puts("\r\n");
+        kfree(b); kfree(a); kfree(c);
+        term_puts("  after free, in use = "); term_putdec((int)heap_bytes_in_use); term_puts("\r\n");
+        void* d = kmalloc(100);
+        term_puts("  realloc d@"); term_puthex((ulong)d); term_puts("\r\n");
+        kfree(d);
     }
     else if (streq(&cmd[0], "sysc"))
     {

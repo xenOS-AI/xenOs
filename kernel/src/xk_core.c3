@@ -121,6 +121,7 @@ fn void xk_boot()
     }
 
     frame_init();
+    heap_init();
     xk_puts("[mem] frame allocator: ");
     xk_putdec((int)g_total_frames);
     xk_puts(" frames, ");
