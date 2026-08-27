@@ -202,3 +202,30 @@ xk_get_bss_start:
 xk_get_bss_end:
     mov rax, __bss_end
     ret
+
+;==============================================================================
+; Cooperative context switch.  void xk_switch(ulong* cur_slot, ulong new_sp)
+; rdi = address of a slot to save the CURRENT rsp into.
+; rsi = stack pointer value of the task to resume.
+; Saves callee-saved regs on the current stack, swaps rsp, restores callee-saved,
+; then ret (jumps to wherever the resumed task was switched out, or to a crafted
+; initial frame).  The popped frame layout (stack grows down) is:
+;   [0]=r15 [1]=r14 [2]=r13 [3]=r12 [4]=rbp [5]=rbx [6]=return address
+;==============================================================================
+global xk_switch
+xk_switch:
+    push rbx
+    push rbp
+    push r12
+    push r13
+    push r14
+    push r15
+    mov [rdi], rsp          ; save current task's stack pointer into *cur_slot
+    mov rsp, rsi            ; load the next task's stack pointer
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbp
+    pop rbx
+    ret

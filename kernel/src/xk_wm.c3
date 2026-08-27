@@ -158,19 +158,6 @@ fn void wm_tick()
 {
     int buttons = (int)mouse_buttons;
 
-    if (buttons != prev_buttons)
-    {
-        xk_puts("[wm] btn ");
-        xk_putdec(buttons);
-        xk_puts(" prev ");
-        xk_putdec(prev_buttons);
-        xk_puts(" m=");
-        xk_putdec(mouse_x);
-        xk_putc(',');
-        xk_putdec(mouse_y);
-        xk_puts("\r\n");
-    }
-
     // left-button handling (press vs release)
     bool press = (buttons & 1) != 0 && (prev_buttons & 1) == 0;
     bool rel   = (buttons & 1) == 0 && (prev_buttons & 1) != 0;
@@ -184,13 +171,6 @@ fn void wm_tick()
         else
         {
             int w = wm_top_window(mouse_x, mouse_y);
-            xk_puts("[wm] press at ");
-            xk_putdec(mouse_x);
-            xk_putc(',');
-            xk_putdec(mouse_y);
-            xk_puts(" win=");
-            xk_putdec(w);
-            xk_puts("\r\n");
             if (w >= 0)
             {
                 Window* ww = &xk_ws[w];
@@ -212,7 +192,6 @@ fn void wm_tick()
                         wm_drag = WIN_MAX - 1;
                         drag_dx = mouse_x - front.x;
                         drag_dy = mouse_y - front.y;
-                        xk_puts("[wm] drag start\r\n");
                     }
                     wm_composite();
                     wm_present_all();
@@ -222,7 +201,6 @@ fn void wm_tick()
     }
     else if (rel)
     {
-        if (wm_drag >= 0) xk_puts("[wm] drag end\r\n");
         wm_drag = -1;
     }
 

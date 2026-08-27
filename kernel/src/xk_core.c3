@@ -126,9 +126,14 @@ fn void xk_boot()
     wm_init();
     wm_register_apps();
 
+    thread_init();
+    thread_spawn_demos();
+
     xk_puts("[kernel] init ok. graphical desktop ready\r\n");
     while (true)
     {
+        thread_yield();         // cooperative multitasking with task slots 1+
+
         xk_hlt();
 
         // keyboard -> focused window
@@ -142,31 +147,6 @@ fn void xk_boot()
         // periodic app updates
         if ((g_ticks % 100) == 0) app_clock_update();
         if ((g_ticks % 12) == 0) app_demo_update();
-        if (g_ticks == 700 || g_ticks == 900)   // TEMP: window-relocation self-test
-        {
-            for (int i = 0; i < WIN_MAX; i++)
-            {
-                if (xk_ws[i].open && xk_ws[i].draw == &app_demo_draw)
-                {
-                    xk_ws[i].x += 30;
-                    xk_ws[i].y += 20;
-                }
-            }
-            wm_composite();
-            wm_present_all();
-        }
-        if ((g_ticks % 50) == 0)
-        {
-            xk_puts("[m] ");
-            xk_putdec(mouse_x);
-            xk_puts(",");
-            xk_putdec(mouse_y);
-            xk_puts(" b=");
-            xk_putdec((int)mouse_buttons);
-            xk_puts(" irq=");
-            xk_putdec(g_mouse_irq);
-            xk_puts("\r\n");
-        }
         if ((g_ticks % 2) == 0)
         {
             fb_cursor(mouse_x, mouse_y);
