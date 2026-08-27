@@ -39,7 +39,15 @@ ld -m elf_x86_64 -T "$KERNEL/linker.ld" -o "$OUT/kernel.elf" $OBJS $REST "$OUT/a
 objcopy -O binary "$OUT/kernel.elf" "$OUT/kernel.bin"
 echo "    kernel.bin = $(stat -c%s "$OUT/kernel.bin") bytes"
 
+echo "[build] host mkdisk tool (C3, freestanding, no libc)"
+mkdir -p "$OUT/hostobj"
+rm -f "$OUT/hostobj"/obj/elf-x64/*.o
+( cd "$OUT/hostobj" && c3c compile-only --no-entry --use-stdlib=no --x86cpu=baseline --x86vec=none -O2 -g0 "$ROOT/tools/mkdisk.c3" )
+nasm -f elf64 -o "$OUT/mkdisk_start.o" "$ROOT/tools/host_start.asm"
+MDOBJ=$(find "$OUT/hostobj/obj" -name 'mkdisk.o' | head -1)
+ld -m elf_x86_64 -o "$OUT/mkdisk" "$MDOBJ" "$OUT/mkdisk_start.o"
+
 echo "[build] assemble disk image"
-python3 "$ROOT/tools/mkdisk.py" "$OUT/stage1.bin" "$OUT/stage2.bin" "$OUT/kernel.bin" "$OUT/xenos.img"
+"$OUT/mkdisk" "$OUT/stage1.bin" "$OUT/stage2.bin" "$OUT/kernel.bin" "$OUT/xenos.img"
 echo "    xenos.img = $(stat -c%s "$OUT/xenos.img") bytes"
 echo "[build] done -> $OUT/xenos.img"
