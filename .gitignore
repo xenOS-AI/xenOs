@@ -1,0 +1,19 @@
+# xenOS build artifacts
+/build/
+/obj/
+
+# compiler object output (c3c emits into build/ccobl, but be safe)
+*.o
+*.elf
+
+# disk image
+*.img
+
+# raw stage outputs
+stage1.bin
+stage2.bin
+kernel.bin
+
+# scratch / editor
+*s.swp
+*~
