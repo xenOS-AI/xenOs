@@ -24,7 +24,21 @@ and a shell — with **zero borrowed code**.
 * A tiny in-memory **VFS** with a few files.
 * **Syscalls** via an `int 0x80` gate (vector 128): `getpid`, `ticks`, `puts`
   (exercised by the shell's `sysc` builtin) — the ABI future ring-3 processes use.
+* **Ring-3 userland** — DPL-3 user segments + a TSS; the kernel drops to CPL3
+  in an embedded program (`user/sys_prog.asm`) that talks to the kernel only
+  via `int 0x80` (gate DPL=3): `SYS_UMSG`, an unknown-syscall that the kernel
+  rejects (protection), and `SYS_EXIT` (returns to ring-0 and resumes the
+  desktop). Lower page-table entries are marked U/S; see the README note on
+  shared page tables.
 * Freestanding `memset/memcpy/memmove/memcmp` exported under exact linker names.
+
+## Known limitations
+- **Shared page tables**: the ring-3 demo reuses the boot identity map, marking
+  the upper PML4/PDPT entries U/S, so the whole first GiB is technically
+  user-accessible. Real per-process isolation needs per-process page tables
+  (CR3 per task), which is future work.
+- **Cooperative scheduler**: tasks yield voluntarily (a timer-IRET preemptive
+  variant failed under QEMU 11's IRET/RSP handling and was reverted).
 
 ## Build & run
 
