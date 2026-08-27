@@ -17,12 +17,27 @@ nasm -f bin -o "$OUT/stage1.bin" "$BOOT/stage1.asm"
 echo "[build] stage2 long-mode trampoline"
 nasm -f bin -o "$OUT/stage2.bin" "$BOOT/stage2.asm"
 
+build_host_tool() {   # build a freestanding C3 host tool (no libc)
+    local name="$1"
+    mkdir -p "$OUT/hostobj"
+    rm -f "$OUT/hostobj"/obj/linux-x64/*.o "$OUT/hostobj"/obj/elf-x64/*.o
+    ( cd "$OUT/hostobj" && c3c compile-only --no-entry --use-stdlib=no --x86cpu=baseline --x86vec=none -O2 -g0 "$ROOT/tools/$name.c3" )
+    local obj
+    obj=$(find "$OUT/hostobj/obj" -name "$name.o" | head -1)
+    ld -m elf_x86_64 -o "$OUT/$name" "$obj" "$OUT/host_start.o"
+}
+echo "[build] host tool runtime (_start + syscalls)"
+nasm -f elf64 -o "$OUT/host_start.o" "$ROOT/tools/host_start.asm"
+echo "[build] mkdisk image assembler (C3, freestanding)"
+build_host_tool mkdisk
+echo "[build] mkbin embedder (C3, freestanding)"
+build_host_tool mkbin
+
 echo "[build] kernel (C3, freestanding, elf-x64)"
-echo "[build] generate 8x8 font"
-python3 "$ROOT/tools/mkfont.py" "$SRC/xk_font.c3" >/dev/null
+# (the 8x8 font xk_font.c3 is committed; regenerate with tools/mkfont if redrawn)
 echo "[build] assemble + embed ring-3 user program"
 nasm -f bin -o "$OUT/user_prog.bin" "$ROOT/user/sys_prog.asm"
-python3 "$ROOT/tools/mkbin.py" "$OUT/user_prog.bin" "$SRC/xk_uprog.c3" >/dev/null
+"$OUT/mkbin" "$OUT/user_prog.bin" "$SRC/xk_uprog.c3"
 mkdir -p "$OUT/ccobl"
 rm -f "$OUT"/ccobl/obj/elf-x64/*.o
 ( cd "$OUT/ccobl" && c3c compile-only --target elf-x64 --no-entry --use-stdlib=no --x86cpu=baseline --x86vec=none -O2 -g0 \
@@ -38,14 +53,6 @@ REST=$(find "$OUT/ccobl/obj/elf-x64" -name '*.o' | grep -v 'xk_main\.o' || true)
 ld -m elf_x86_64 -T "$KERNEL/linker.ld" -o "$OUT/kernel.elf" $OBJS $REST "$OUT/asm_runtime.o"
 objcopy -O binary "$OUT/kernel.elf" "$OUT/kernel.bin"
 echo "    kernel.bin = $(stat -c%s "$OUT/kernel.bin") bytes"
-
-echo "[build] host mkdisk tool (C3, freestanding, no libc)"
-mkdir -p "$OUT/hostobj"
-rm -f "$OUT/hostobj"/obj/elf-x64/*.o
-( cd "$OUT/hostobj" && c3c compile-only --no-entry --use-stdlib=no --x86cpu=baseline --x86vec=none -O2 -g0 "$ROOT/tools/mkdisk.c3" )
-nasm -f elf64 -o "$OUT/mkdisk_start.o" "$ROOT/tools/host_start.asm"
-MDOBJ=$(find "$OUT/hostobj/obj" -name 'mkdisk.o' | head -1)
-ld -m elf_x86_64 -o "$OUT/mkdisk" "$MDOBJ" "$OUT/mkdisk_start.o"
 
 echo "[build] assemble disk image"
 "$OUT/mkdisk" "$OUT/stage1.bin" "$OUT/stage2.bin" "$OUT/kernel.bin" "$OUT/xenos.img"
