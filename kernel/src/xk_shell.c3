@@ -63,7 +63,7 @@ fn void vfs_cat(char* name)
 // ---- built-in commands ----
 fn void shell_help()
 {
-    term_puts("built-ins: help ls cat <file> echo <text> clear about uname ps sysc mem heap\r\n");
+    term_puts("built-ins: help ls cat <file> echo <text> clear about uname ps sysc mem heap poweroff reboot\r\n");
 }
 
 fn void shell_about()
@@ -127,6 +127,8 @@ fn void shell_run(char* line)
         }
         term_puts("  after free, used = "); term_putdec((int)g_used_frames); term_puts("\r\n");
     }
+    else if (streq(&cmd[0], "poweroff")) { xk_shutdown(); }
+    else if (streq(&cmd[0], "reboot"))   { xk_reboot(); }
     else if (streq(&cmd[0], "heap"))
     {
         term_puts("kernel heap: in use = "); term_putdec((int)heap_bytes_in_use); term_puts(" bytes\r\n");

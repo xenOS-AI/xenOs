@@ -211,6 +211,27 @@ fn void xk_putc(char c)
     xk_serial_putc(c);
 }
 
+// ---- machine control ----
+// Power off via ACPI/PM (QEMU: write 0x2000 to port 0x604). Falls back to
+// halting if the board does not honour it.
+fn void xk_shutdown()
+{
+    xk_puts("[power] shutting down (ACPI 0x604)\r\n");
+    xk_outb(0x604, 0x00);
+    xk_outb(0x605, 0x20);
+    xk_cli();
+    while (true) xk_hlt();
+}
+
+// Reset via the 8042 keyboard-controller reset port.
+fn void xk_reboot()
+{
+    xk_puts("[power] rebooting (8042)\r\n");
+    xk_outb(0x64, 0xFE);
+    xk_cli();
+    while (true) xk_hlt();
+}
+
 fn void xk_puts(char* s)
 {
     xk_serial_puts(s);
