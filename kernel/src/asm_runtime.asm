@@ -253,3 +253,36 @@ xk_syscall:
     int 0x80
     pop rbx               ; restore the caller's rbx
     ret
+
+;==============================================================================
+; Preemptive context switch driven from inside the timer ISR.
+;   void xk_preempt(ulong* cur_slot, ulong cur_frame, ulong next_sp)
+;   rdi = addr of a slot to save the CURRENT task's interrupt-frame pointer.
+;   rsi = the current task's IntFrame pointer (isr_common's rsp = pushed GPRs).
+;   rdx = the NEXT task's IntFrame pointer.
+; Saves the current frame pointer, loads the next frame pointer, then performs
+; exactly the tail of isr_common (pop GPRs, skip vector+err, iretq) so the next
+; task resumes at the point it was preempted (or at a crafted initial frame).
+; This never returns to the preempted task.
+;==============================================================================
+global xk_preempt
+xk_preempt:
+    mov [rdi], rsi        ; current task's saved_sp = its IntFrame pointer
+    mov rsp, rdx          ; switch to the next task's IntFrame pointer
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rbp
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+    add rsp, 16           ; skip vector + error_code
+    iretq

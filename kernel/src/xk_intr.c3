@@ -80,7 +80,6 @@ fn void xk_eoi(uint irq)
 fn void irq_timer(IntFrame* f)
 {
     g_ticks++;
-    // scheduler / clock hook lives here
 }
 
 // ---- default / unhandled IRQ ----

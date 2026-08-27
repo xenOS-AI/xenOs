@@ -133,7 +133,6 @@ fn void xk_boot()
     while (true)
     {
         thread_yield();         // cooperative multitasking with task slots 1+
-
         xk_hlt();
 
         // keyboard -> focused window
