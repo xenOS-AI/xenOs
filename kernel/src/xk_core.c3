@@ -14,6 +14,7 @@ extern fn void xk_ltr(ushort selector);
 extern fn ulong xk_read_cr2();
 extern fn ulong xk_read_cr3();
 extern fn ulong xk_rdtsc();
+extern fn void xk_set_ssdata();
 
 // ---- BootInfo passed by the bootloader at physical 0x7000 ----
 struct BootInfo
@@ -148,6 +149,8 @@ fn void xk_boot()
 // The cooperative desktop loop (started by umode_resume after the ring-3 demo).
 fn void xk_idle_loop()
 {
+    xk_set_ssdata();        // ensure a valid kernel-data SS before preemption
+    sched_enable();         // turn on timer preemption (multi-task desktop)
     while (true)
     {
         thread_yield();         // cooperative multitasking with task slots 1+

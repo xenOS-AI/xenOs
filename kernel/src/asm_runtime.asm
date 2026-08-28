@@ -114,6 +114,16 @@ xk_rdtsc:
     or rax, rdx
     ret
 
+; ulong xk_get_ticks(void)
+; Returns the kernel tick counter (g_ticks). Read through a real asm call so that
+; busy-loop code cannot have the C3 compiler hoist the load as a loop-invariant
+; (the value is updated from an ISR at any moment).
+extern xk.g_ticks
+global xk_get_ticks
+xk_get_ticks:
+    mov rax, [rel xk.g_ticks]
+    ret
+
 ;==============================================================================
 ; Interrupt Service Routines (hand-written).
 ; Each vector has a stub that arranges [vector][error_code] on the stack and
@@ -303,21 +313,30 @@ xk_iret_ring0:
     iretq
     hlt                   ; never reached
 
+; void xk_set_ssdata(void)
+; Force SS to the flat kernel DATA selector (0x20). The desktop loop is entered
+; from the ring-3 SYS_EXIT path without a proper ring-0 iretq, which can leave a
+; NULL SS; a valid SS is required so that iretq (in xk_preempt) treats the return
+; as same-ring (3-word frame) instead of attempting a privilege change.
+global xk_set_ssdata
+xk_set_ssdata:
+    mov ax, 0x20
+    mov ss, ax
+    ret
+
 ;==============================================================================
-; Preemptive context switch driven from inside the timer ISR.
-;   void xk_preempt(ulong* cur_slot, ulong cur_frame, ulong next_sp)
-;   rdi = addr of a slot to save the CURRENT task's interrupt-frame pointer.
-;   rsi = the current task's IntFrame pointer (isr_common's rsp = pushed GPRs).
-;   rdx = the NEXT task's IntFrame pointer.
-; Saves the current frame pointer, loads the next frame pointer, then performs
-; exactly the tail of isr_common (pop GPRs, skip vector+err, iretq) so the next
-; task resumes at the point it was preempted (or at a crafted initial frame).
-; This never returns to the preempted task.
+; Resume a task from its OWN real interrupt frame (created by isr_common on a
+; genuine timer interrupt). This is exactly the tail of isr_common: load rsp
+; to point at the frame's GPR region, pop the 15 GPRs, skip vector+error, then
+; iretq back to the point where the task was interrupted. Because the frame was
+; produced by the CPU on a real ring-0 interrupt, this same-ring iretq behaves
+; correctly under QEMU (unlike a hand-crafted frame, which QEMU 11's iretq
+; rejects). Never returns.
+;   void xk_preempt_resume(ulong frame)   -- frame in rdi
 ;==============================================================================
-global xk_preempt
-xk_preempt:
-    mov [rdi], rsi        ; current task's saved_sp = its IntFrame pointer
-    mov rsp, rdx          ; switch to the next task's IntFrame pointer
+global xk_preempt_resume
+xk_preempt_resume:
+    mov rsp, rdi          ; point at the frame's [r15] slot
     pop r15
     pop r14
     pop r13

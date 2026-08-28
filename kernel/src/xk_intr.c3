@@ -36,7 +36,10 @@ const ushort KERNEL_CODE64 = 0x18;  // code64 selector from the boot GDT
 // IRQ dispatch table (16 entries).
 alias IrqHandler = fn void(IntFrame*);
 IrqHandler[16] irq_table;      // array of function-pointer values (BSS-zeroed = null)
-ulong g_ticks;
+ulong g_ticks;                 // incremented in the PIT ISR. Busy loops MUST read
+                               // it through xk_get_ticks() (an extern asm call) so
+                               // the C3 compiler cannot hoist the read out of the
+                               // loop as loop-invariant.
 
 fn void idt_set(void* base, int index, ulong handler, ushort selector, uint type_attr)
 {
@@ -80,6 +83,7 @@ fn void xk_eoi(uint irq)
 fn void irq_timer(IntFrame* f)
 {
     g_ticks++;
+    sched_timer(f);   // may EOI + preempt to another task (never returns)
 }
 
 // ---- default / unhandled IRQ ----
