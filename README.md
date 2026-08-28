@@ -23,6 +23,12 @@ and a shell — with **zero borrowed code**.
 * GUI apps: an animated demo window and a clock, and a **terminal window
   running an interactive shell** (`sh`) with `ls/cat/echo/help/about/uname/ps/clear`.
 * A tiny in-memory **VFS** with a few files.
+* **Real FAT16 filesystem on disk** — the host tool `tools/mkfat.c3` builds an
+  8 MiB FAT16 volume (`build/fat.img`) populated with real files; the kernel
+  mounts it at boot by reading the boot sector over a from-scratch **ATA PIO
+  driver** (secondary IDE channel), and the shell `ls`/`cat` list and read the
+  actual on-disk files (following the FAT cluster chain). No emulation, no
+  BIOS disk calls — the driver is hand-written C3.
 * **Syscalls** via an `int 0x80` gate (vector 128): `getpid`, `ticks`, `puts`
   (exercised by the shell's `sysc` builtin) — the ABI future ring-3 processes use.
 * **Ring-3 userland with a DISTINCT per-process address space** — DPL-3 user

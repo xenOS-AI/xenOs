@@ -8,7 +8,7 @@ cd "$(dirname "$0")"
 IMG=build/xenos.img
 [[ -f "$IMG" ]] || { echo "build/xenos.img missing - run ./build.sh first"; exit 1; }
 
-BASE=(-drive file="$IMG",format=raw -m 256 -machine pc -vga std -no-reboot)
+BASE=(-drive file="$IMG",format=raw -drive file=build/fat.img,format=raw,if=ide,index=2 -m 256 -machine pc -vga std -no-reboot)
 
 if [[ "${1:-}" == "serial" ]]; then
     qemu-system-x86_64 "${BASE[@]}" -display none -serial stdio

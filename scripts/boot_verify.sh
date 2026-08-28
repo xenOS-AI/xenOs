@@ -13,6 +13,7 @@ rm -f "$SER" "$MON" "$SHOT"
 
 qemu-system-x86_64 \
   -drive file="$IMG",format=raw \
+  -drive file=build/fat.img,format=raw,if=ide,index=2 \
   -m 256 -machine pc -vga std \
   -display none -no-reboot \
   -serial "file:$SER" \

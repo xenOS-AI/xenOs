@@ -39,24 +39,38 @@ fn void skip_cmd(char* line, char* arg, int n)
     if (j < n - 1) { arg[j] = 0; } else { arg[n - 1] = 0; }
 }
 
-// ---- tiny VFS: a fixed catalog of files ----
+// ---- VFS backed by the on-disk FAT16 volume ----
 fn void vfs_ls()
 {
-    term_puts("  README  motd  release  version  /etc/motd\r\n");
+    fat_list();
 }
 
 fn void vfs_cat(char* name)
 {
-    if (streq(name, "README"))      { term_puts("xenOS: a from-scratch hobby OS written in C3.\r\n"); }
-    else if (streq(name, "motd"))   { term_puts("Welcome to xenOS.\r\n"); }
-    else if (streq(name, "release")){ term_puts("xenOS 0.1 (hand-written, C3)\r\n"); }
-    else if (streq(name, "version")){ term_puts("kernel 0.1 - no external code\r\n"); }
-    else if (streq(name, "/etc/motd")) { term_puts("Welcome to xenOS.\r\n"); }
-    else
+    if (!g_fat_mounted)
+    {
+        term_puts("cat: FAT16 filesystem not mounted\r\n");
+        return;
+    }
+    char[2048] buf;
+    uint len = 0;
+    int r = fat_read_file(name, &buf[0], 2048, &len);
+    if (r == 0)
+    {
+        for (uint i = 0; i < len; i++)
+        {
+            fat_putc((char)buf[i]);
+        }
+    }
+    else if (r == 1)
     {
         term_puts("cat: no such file: ");
         term_puts(name);
         term_puts("\r\n");
+    }
+    else
+    {
+        term_puts("cat: disk error\r\n");
     }
 }
 

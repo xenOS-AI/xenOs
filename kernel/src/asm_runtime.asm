@@ -26,6 +26,13 @@ xk_inb:
     in al, dx
     ret
 
+; ushort xk_inw(uint port) -> ax (16-bit read; used for ATA data transfers)
+global xk_inw
+xk_inw:
+    mov dx, di
+    in ax, dx
+    ret
+
 ; void xk_outl(uint port, uint val)
 xk_outl:
     mov dx, di

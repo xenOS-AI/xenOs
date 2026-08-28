@@ -136,6 +136,7 @@ fn void xk_boot()
     xk_mouse_init();
     wm_init();
     wm_register_apps();
+    fat_mount();                 // real on-disk FAT16 volume (build/fat.img)
 
     thread_init();
     thread_spawn_demos();
