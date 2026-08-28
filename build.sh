@@ -38,6 +38,7 @@ echo "[build] mkfat FAT16 data volume (C3, freestanding)"
 build_host_tool mkfat
 rm -f "$OUT/fat.img"
 "$OUT/mkfat" "$OUT/fat.img"
+cp -f "$OUT/fat.img" "$OUT/sata.img"    # identical volume shown to the AHCI controller
 
 echo "[build] kernel (C3, freestanding, elf-x64)"
 # (the 8x8 font xk_font.c3 is committed; regenerate with tools/mkfont if redrawn)
@@ -49,7 +50,7 @@ rm -f "$OUT"/ccobl/obj/elf-x64/*.o
 ( cd "$OUT/ccobl" && c3c compile-only --target elf-x64 --no-entry --use-stdlib=no --x86cpu=baseline --x86vec=none -O2 -g0 \
     "$SRC/xk_main.c3" "$SRC/xk_core.c3" "$SRC/xk_intr.c3" "$SRC/xk_kbd.c3" \
     "$SRC/xk_mouse.c3" "$SRC/xk_font.c3" "$SRC/xk_fb.c3" \
-    "$SRC/xk_wm.c3" "$SRC/xk_apps.c3" "$SRC/xk_sched.c3" "$SRC/xk_shell.c3" "$SRC/xk_mem.c3" "$SRC/xk_sys.c3" "$SRC/xk_alloc.c3" "$SRC/xk_umode.c3" "$SRC/xk_uprog.c3" "$SRC/xk_pci.c3" "$SRC/xk_rtc.c3" "$SRC/xk_ata.c3" "$SRC/xk_fat.c3" )
+    "$SRC/xk_wm.c3" "$SRC/xk_apps.c3" "$SRC/xk_sched.c3" "$SRC/xk_shell.c3" "$SRC/xk_mem.c3" "$SRC/xk_sys.c3" "$SRC/xk_alloc.c3" "$SRC/xk_umode.c3" "$SRC/xk_uprog.c3" "$SRC/xk_pci.c3" "$SRC/xk_rtc.c3" "$SRC/xk_ata.c3" "$SRC/xk_fat.c3" "$SRC/xk_ahci.c3" )
 echo "[build] asm runtime"
 nasm -f elf64 -o "$OUT/asm_runtime.o" "$SRC/asm_runtime.asm"
 

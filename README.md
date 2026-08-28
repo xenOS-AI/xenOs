@@ -42,6 +42,12 @@ and a shell — with **zero borrowed code**.
   supervisor — so the kernel stays isolated and the shared kernel tables are
   never made user-accessible.
 * Freestanding `memset/memcpy/memmove/memcmp` exported under exact linker names.
+* **PCI + AHCI (SATA) driver** — the PCI probe enumerates the bus and now detects
+  the SATA host controller (class 01.06, e.g. Intel ich9-ahci 8086:2922); the
+  from-scratch `xk_ahci.c3` resets and enables the HBA, brings up each live SATA
+  link (PxSSTS DET=3), and issues real device commands through a command header,
+  a host-to-device FIS and a PRDT (count = 7 devices under QEMU once the AHCI
+  controller is attached).
 
 ## Known limitations
 - **Preemption is not interrupt-safe for arbitrary kernel code**: the timer
@@ -54,6 +60,11 @@ and a shell — with **zero borrowed code**.
   user program; there is no process table / fork / exec yet, so distinct-CR3
   support is demonstrated by that one program (one address space built at boot).
   Generalizing to N processes with a switch-on-schedule is future work.
+- **AHCI read returns empty on QEMU**: the SATA host controller is initialized,
+  the link is brought up and device commands are accepted (DET=3, PxCI clears,
+  DHRS asserts, no drive error), but the sector data DMA path back into the guest
+  PRD buffer does not yet land (buffers read back zero; the PRD descriptor is
+  correct). This is the known remaining piece of the AHCI driver.
 
 ## Build & run
 

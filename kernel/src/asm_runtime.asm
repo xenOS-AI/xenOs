@@ -137,6 +137,18 @@ xk_get_ticks:
     mov rax, [rel xk.g_ticks]
     ret
 
+; uint xk_mmio_read32(ulong addr) / void xk_mmio_write32(ulong addr, uint val)
+; Memory-mapped I/O (device registers). Done in asm so device-status reads in a
+; busy-wait cannot be hoisted out of the loop by the C3 compiler.
+global xk_mmio_read32
+xk_mmio_read32:
+    mov eax, [rdi]
+    ret
+global xk_mmio_write32
+xk_mmio_write32:
+    mov [rdi], esi
+    ret
+
 ;==============================================================================
 ; Interrupt Service Routines (hand-written).
 ; Each vector has a stub that arranges [vector][error_code] on the stack and

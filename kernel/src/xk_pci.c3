@@ -59,6 +59,7 @@ fn void pci_init()
 {
     xk_puts("[pci] enumerating PCI bus...\r\n");
     int found = 0;
+    ulong ahci_bar = 0;
     for (uint bus = 0; bus < 2; bus++)
     {
         for (uint dev = 0; dev < 32; dev++)
@@ -74,6 +75,13 @@ fn void pci_init()
                 }
                 pci_dump_one(bus, dev, func);
                 found++;
+                // detect an AHCI (SATA host controller): base class 0x01,
+                // subclass 0x06 -> config reg 0x08 >> 16 == 0x0106.
+                // Grab its ABAR from BAR5 (config reg 0x24).
+                if ((pci_rd(bus, dev, func, 0x08) >> 16) == 0x0106)
+                {
+                    ahci_bar = (ulong)(pci_rd(bus, dev, func, 0x24) & 0xFFFFFFF0u);
+                }
                 if (func == 0)
                 {
                     uint hdr = pci_rd(bus, dev, func, 0x0C);
@@ -86,4 +94,12 @@ fn void pci_init()
     xk_puts("[pci] ");
     xk_putdec(found);
     xk_puts(" PCI device(s)\r\n");
+    if (ahci_bar != 0)
+    {
+        xk_puts("[pci] AHCI (SATA) host controller found, ABAR=");
+        xk_puthex(ahci_bar);
+        xk_puts("\r\n");
+        g_ahci_base = ahci_bar;
+        ahci_init();
+    }
 }
