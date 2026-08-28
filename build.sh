@@ -32,6 +32,8 @@ echo "[build] mkdisk image assembler (C3, freestanding)"
 build_host_tool mkdisk
 echo "[build] mkbin embedder (C3, freestanding)"
 build_host_tool mkbin
+echo "[build] mkbootimg (C3, freestanding; builds the El Torito boot image)"
+build_host_tool mkbootimg
 
 echo "[build] kernel (C3, freestanding, elf-x64)"
 # (the 8x8 font xk_font.c3 is committed; regenerate with tools/mkfont if redrawn)
@@ -57,4 +59,18 @@ echo "    kernel.bin = $(stat -c%s "$OUT/kernel.bin") bytes"
 echo "[build] assemble disk image"
 "$OUT/mkdisk" "$OUT/stage1.bin" "$OUT/stage2.bin" "$OUT/kernel.bin" "$OUT/xenos.img"
 echo "    xenos.img = $(stat -c%s "$OUT/xenos.img") bytes"
-echo "[build] done -> $OUT/xenos.img"
+
+if command -v xorrisofs >/dev/null 2>&1; then
+    echo "[build] bootable ISO (El Torito no-emulation; hand-written loader + xorrisofs)"
+    nasm -f bin -o "$OUT/iso_boot.bin" "$ROOT/iso/iso_boot.asm"
+    mkdir -p "$OUT/isoroot"
+    "$OUT/mkbootimg" "$OUT/iso_boot.bin" "$OUT/kernel.bin" "$OUT/isoroot/xenos_boot.img"
+    xorrisofs -quiet -o "$OUT/xenos.iso" -b xenos_boot.img -no-emul-boot -boot-load-size 108 "$OUT/isoroot" 2>/dev/null
+    echo "    xenos.iso = $(stat -c%s "$OUT/xenos.iso") bytes (qemu -cdrom / -boot d)"
+else
+    echo "[build] xorrisofs not found; skipping ISO (qemu -drive xenos.img works)"
+fi
+
+echo "[build] done"
+echo "    disk:  qemu-system-x86_64 -drive file=build/xenos.img,format=raw -m 256 ..."
+echo "    iso:   qemu-system-x86_64 -cdrom  build/xenos.iso -m 256 ..."

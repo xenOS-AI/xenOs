@@ -43,13 +43,23 @@ and a shell — with **zero borrowed code**.
 ## Build & run
 
 Requires: `c3c` (0.8.x, `sudo pacman -S c3c` on Arch), `nasm`, `clang/ld`,
-`python3`, `qemu-system-x86_64`.
+`python3`, `qemu-system-x86_64` (`xorrisofs` for the bootable ISO).
 
 ```sh
-./build.sh      # assembles boot stages, compiles+links the C3 kernel, builds the image
+./build.sh      # assembles boot stages, compiles+links the C3 kernel, builds xenos.img AND xenos.iso
 ./run.sh        # boot the graphical desktop in a QEMU window
 ./run.sh serial # headless boot with the serial console in the terminal
+
+# bootable ISO (built by ./build.sh when xorrisofs is present)
+qemu-system-x86_64 -cdrom build/xenos.iso -m 256 -boot d
 ```
+
+`./build.sh` produces both a raw disk image (`build/xenos.img`) and a bootable
+El Torito CD-Rom (`build/xenos.iso`). The ISO's boot image is a hand-written
+no-emulation loader (`iso/iso_boot.asm`, assembled and wrapped with our own
+`mkbootimg` C3 tool plus `xorrisofs` for the ISO9660 container); it copies the
+kernel to 0x100000 and enters long mode the same way the disk boot does. Booting
+the ISO has no VESA framebuffer, so the kernel falls back to a serial console.
 
 The desktop boots to a taskbar/dock with three windows. Click the terminal
 (title bar) to focus it and start typing shell commands (e.g. `ls`, `cat motd`,
@@ -84,11 +94,16 @@ tools/
   host_start.asm  freestanding host runtime (_start + Linux syscalls) for the C3 tools
   mkdisk.c3    C3 host tool: assembles the bootable disk image (no libc)
   mkbin.c3     C3 host tool: embeds the ring-3 program as xk_uprog.c3 (no libc)
+  mkbootimg.c3 C3 host tool: builds the El Torito no-emulation boot image (no libc)
+iso/
+  iso_boot.asm  hand-written no-emulation ISO boot loader (copies kernel to
+                0x100000, enters long mode; wrapped into xenos.iso by build.sh)
 ```
-The build pipeline itself is hand-written C3 too: `mkdisk.c3` and `mkbin.c3`
-are freestanding host programs (no libc) that build.sh compiles and links; the
-only external tools are the compiler/assembler/linker (`c3c`, `nasm`, `ld`,
-`objcopy`), which no OS can avoid. `python3` is not used by the build.
+The build pipeline itself is hand-written C3 too: `mkdisk.c3`, `mkbin.c3`, and
+`mkbootimg.c3` are freestanding host programs (no libc) that build.sh compiles
+and links. The only external tools are the compiler/assembler/linker (`c3c`,
+`nasm`, `ld`, `objcopy`) and `xorrisofs` (ISO9660 container for the bootable
+ISO); no OS can avoid a toolchain. `python3` is not used by the build.
 
 Memory map (physical): stage1 @0x7C00, BootInfo @0x7000, stage2 @0x8000, page
 tables/GDT @0x9000–0xF000, kernel stack @0x90000, kernel @0x100000, task stacks
