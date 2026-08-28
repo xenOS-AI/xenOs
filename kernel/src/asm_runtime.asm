@@ -5,7 +5,7 @@
 ;==============================================================================
 [BITS 64]
 default rel
-global xk_outb, xk_inb, xk_io_wait
+global xk_outb, xk_inb, xk_io_wait, xk_outl, xk_inl
 global xk_cli, xk_sti, xk_hlt, xk_pause
 global xk_lgdt, xk_lidt, xk_ltr
 global xk_read_cr2, xk_read_cr3
@@ -24,6 +24,19 @@ xk_outb:
 xk_inb:
     mov dx, di
     in al, dx
+    ret
+
+; void xk_outl(uint port, uint val)
+xk_outl:
+    mov dx, di
+    mov eax, esi
+    out dx, eax
+    ret
+
+; uint xk_inl(uint port)
+xk_inl:
+    mov dx, di
+    in eax, dx
     ret
 
 ; void xk_io_wait(void)  -- brief dummy write to port 0x80

@@ -127,6 +127,19 @@ fn void shell_run(char* line)
         }
         term_puts("  after free, used = "); term_putdec((int)g_used_frames); term_puts("\r\n");
     }
+    else if (streq(&cmd[0], "date"))
+    {
+        int h = 0;
+        int m = 0;
+        int s = 0;
+        if (rtc_read_time(&h, &m, &s))
+        {
+            term_puts("RTC: ");
+            term_putdec(h); term_puts(":"); term_putdec(m); term_puts(":"); term_putdec(s);
+            term_puts("\r\n");
+        }
+        else { term_puts("no RTC\r\n"); }
+    }
     else if (streq(&cmd[0], "poweroff")) { xk_shutdown(); }
     else if (streq(&cmd[0], "reboot"))   { xk_reboot(); }
     else if (streq(&cmd[0], "heap"))

@@ -128,6 +128,8 @@ fn void xk_boot()
     xk_putdec((int)g_used_frames);
     xk_puts(" used\r\n");
 
+    pci_init();
+
     xk_intr_init();
     xk_kbd_init();
     xk_mouse_init();
