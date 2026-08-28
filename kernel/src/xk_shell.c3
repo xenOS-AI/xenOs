@@ -113,6 +113,28 @@ fn void shell_run(char* line)
     if (cmd[0] == 0) { return; }
     else if (streq(&cmd[0], "help"))   { shell_help(); }
     else if (streq(&cmd[0], "aicfg"))  { ai_cfg_show(); }
+    else if (streq(&cmd[0], "journal"))
+    {
+        journal_print();
+    }
+    else if (streq(&cmd[0], "actdir"))
+    {
+        // offline grammar test: run the safe action grammar on literal text
+        if (arg[0] == 0) { term_puts("usage: actdir <response-text>\r\n"); }
+        else { agent_act(&arg[0]); term_puts("grammar run; see journal\r\n"); }
+    }
+    else if (streq(&cmd[0], "act"))
+    {
+        // ask the provider, then apply the safe action grammar to its reply
+        if (arg[0] == 0) { term_puts("usage: act <prompt>\r\n"); }
+        else
+        {
+            AiChatResult res;
+            int rc = ai_chat(&arg[0], &res);
+            if (rc != 0) { term_puts("AI transport error (not configured/network)\r\n"); }
+            else { agent_act(&res.content[0]); term_puts("action applied; see journal\r\n"); }
+        }
+    }
     else if (streq(&cmd[0], "aichat"))
     {
         // headless chat: `aichat <prompt>` via the client (mirrors the chat box)
