@@ -36,6 +36,8 @@ echo "[build] mkbootimg (C3, freestanding; builds the El Torito boot image)"
 build_host_tool mkbootimg
 echo "[build] mkfat FAT16 data volume (C3, freestanding)"
 build_host_tool mkfat
+echo "[build] ai_mock host AI provider server (C3, freestanding)"
+build_host_tool ai_mock
 rm -f "$OUT/fat.img"
 "$OUT/mkfat" "$OUT/fat.img"
 cp -f "$OUT/fat.img" "$OUT/sata.img"    # identical volume shown to the AHCI controller
@@ -50,7 +52,7 @@ rm -f "$OUT"/ccobl/obj/elf-x64/*.o
 ( cd "$OUT/ccobl" && c3c compile-only --target elf-x64 --no-entry --use-stdlib=no --x86cpu=baseline --x86vec=none -O2 -g0 \
     "$SRC/xk_main.c3" "$SRC/xk_core.c3" "$SRC/xk_intr.c3" "$SRC/xk_kbd.c3" \
     "$SRC/xk_mouse.c3" "$SRC/xk_font.c3" "$SRC/xk_fb.c3" \
-    "$SRC/xk_wm.c3" "$SRC/xk_apps.c3" "$SRC/xk_sched.c3" "$SRC/xk_shell.c3" "$SRC/xk_mem.c3" "$SRC/xk_sys.c3" "$SRC/xk_alloc.c3" "$SRC/xk_umode.c3" "$SRC/xk_uprog.c3" "$SRC/xk_pci.c3" "$SRC/xk_rtc.c3" "$SRC/xk_ata.c3" "$SRC/xk_fat.c3" "$SRC/xk_ahci.c3" "$SRC/xk_ai_cfg.c3" "$SRC/xk_ai_client.c3" "$SRC/xk_chat.c3" )
+    "$SRC/xk_wm.c3" "$SRC/xk_apps.c3" "$SRC/xk_sched.c3" "$SRC/xk_shell.c3" "$SRC/xk_mem.c3" "$SRC/xk_sys.c3" "$SRC/xk_alloc.c3" "$SRC/xk_umode.c3" "$SRC/xk_uprog.c3" "$SRC/xk_pci.c3" "$SRC/xk_rtc.c3" "$SRC/xk_ata.c3" "$SRC/xk_fat.c3" "$SRC/xk_ahci.c3" "$SRC/xk_ai_cfg.c3" "$SRC/xk_ai_client.c3" "$SRC/xk_chat.c3" "$SRC/xk_net.c3" "$SRC/xk_ip.c3" "$SRC/xk_tcp.c3" "$SRC/xk_http.c3" )
 echo "[build] asm runtime"
 nasm -f elf64 -o "$OUT/asm_runtime.o" "$SRC/asm_runtime.asm"
 

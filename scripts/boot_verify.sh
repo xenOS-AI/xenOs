@@ -15,6 +15,7 @@ qemu-system-x86_64 \
   -drive file="$IMG",format=raw \
   -drive file=build/fat.img,format=raw,if=ide,index=2 \
   -device ich9-ahci,id=ahci -drive file=build/sata.img,format=raw,if=none,id=sd0 -device ide-hd,drive=sd0,bus=ahci.0 \
+  -netdev user,id=net0,hostfwd=tcp::19080-10.0.2.15:9080 -device e1000,netdev=net0,mac=52:54:00:12:34:56 \
   -m 256 -machine pc -vga std \
   -display none -no-reboot \
   -serial "file:$SER" \

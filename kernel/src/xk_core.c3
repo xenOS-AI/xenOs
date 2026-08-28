@@ -129,7 +129,10 @@ fn void xk_boot()
     xk_putdec((int)g_used_frames);
     xk_puts(" used\r\n");
 
+    ai_client_init();            // default AI transport = mock (HTTP overrides below)
+
     pci_init();
+    if (net_init()) { http_register(); }   // e1000 NIC -> live HTTP AI transport
 
     xk_intr_init();
     xk_kbd_init();
@@ -138,7 +141,6 @@ fn void xk_boot()
     wm_register_apps();
     fat_mount();                 // real on-disk FAT16 volume (build/fat.img)
     ai_cfg_init();               // read AI.CFG (model/endpoint/token) from FAT
-    ai_client_init();            // register the AI client transport (mock for now)
     chat_open_window();          // AI-first chat box on the desktop
 
     thread_init();
@@ -167,6 +169,9 @@ fn void xk_idle_loop()
         }
         // window-manager input (mouse) + repaint
         wm_tick();
+
+        // network receive (drives ARP/TCP toward the AI provider)
+        net_poll();
 
         // periodic app updates
         if ((g_ticks % 100) == 0) app_clock_update();
