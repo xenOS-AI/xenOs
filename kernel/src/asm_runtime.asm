@@ -107,6 +107,12 @@ xk_read_cr3:
     mov rax, cr3
     ret
 
+; void xk_set_cr3(ulong value)   -- load CR3 (switch address space) + flush TLB
+global xk_set_cr3
+xk_set_cr3:
+    mov cr3, rdi
+    ret
+
 ; ulong xk_rdtsc(void)
 xk_rdtsc:
     rdtsc

@@ -15,8 +15,9 @@ and a shell — with **zero borrowed code**.
 * VESA **framebuffer** (800x600x32) with a RAM shadow buffer + dirty-rect blit
   (TCG's VRAM is slow, so only damaged regions are copied) and a hand-drawn
   8x8 bitmap font.
-* Cooperative round-robin **multitasking** — kernel tasks with their own stacks
-  (verified: tasks A/B/C interleave with the WM task on serial).
+* Preemptive round-robin **multitasking** — the PIT timer preempts every task
+  at 100 Hz (~10 ms slice; verified: busy-looping demo tasks with *no* yield
+  interleave A/B/C once per second while the desktop/shell stay responsive).
 * A **window manager** (own X-equivalent): titled windows (active/inactive),
   click-to-focus, close button, drag-by-title, plus a dock.
 * GUI apps: an animated demo window and a clock, and a **terminal window
@@ -24,21 +25,29 @@ and a shell — with **zero borrowed code**.
 * A tiny in-memory **VFS** with a few files.
 * **Syscalls** via an `int 0x80` gate (vector 128): `getpid`, `ticks`, `puts`
   (exercised by the shell's `sysc` builtin) — the ABI future ring-3 processes use.
-* **Ring-3 userland** — DPL-3 user segments + a TSS; the kernel drops to CPL3
-  in an embedded program (`user/sys_prog.asm`) that talks to the kernel only
-  via `int 0x80` (gate DPL=3): `SYS_UMSG`, an unknown-syscall that the kernel
-  rejects (protection), and `SYS_EXIT` (returns to ring-0 and resumes the
-  desktop). Lower page-table entries are marked U/S; see the README note on
-  shared page tables.
+* **Ring-3 userland with a DISTINCT per-process address space** — DPL-3 user
+  segments + a TSS; the kernel drops to CPL3 in an embedded program
+  (`user/sys_prog.asm`) that talks to the kernel only via `int 0x80`
+  (gate DPL=3): `SYS_UMSG`, an unknown-syscall that the kernel rejects
+  (protection), and `SYS_EXIT` (returns to ring-0 and resumes the desktop).
+  Each program gets its OWN page tables (a separate CR3, e.g. 0x112000 vs the
+  kernel's 0x9000) built by `create_process_addrspace()`: an identity 0..4GiB
+  map where only the process's own 2MiB page is U/S and every other PDE is
+  supervisor — so the kernel stays isolated and the shared kernel tables are
+  never made user-accessible.
 * Freestanding `memset/memcpy/memmove/memcmp` exported under exact linker names.
 
 ## Known limitations
-- **Page tables are shared with the kernel** but isolation still holds: ring-3
-  CANNOT reach kernel pages because their PDEs have U/S=0 (verified: a ring-3
-  write to 0x100000 #PFs and the kernel terminates the program). Full
-  per-process address spaces (a distinct CR3 per process) are future work.
-- **Cooperative scheduler**: tasks yield voluntarily (a timer-IRET preemptive
-  variant failed under QEMU 11's IRET/RSP handling and was reverted).
+- **Preemption is not interrupt-safe for arbitrary kernel code**: the timer
+  preempts at a defined scheduler point (task resume via its real frame), and
+  a preempted task's own stack locals do not reliably survive the switch — long-
+  lived per-task state lives in module globals. (A hand-crafted new-task IRET
+  frame is rejected by QEMU 11's iretq, so the hybrid xk_switch + real-frame
+  iretq switch described in `kernel/src/xk_sched.c3` is used.)
+- **One ring-3 process at a time**: the embedded `sys_prog.asm` is the single
+  user program; there is no process table / fork / exec yet, so distinct-CR3
+  support is demonstrated by that one program (one address space built at boot).
+  Generalizing to N processes with a switch-on-schedule is future work.
 
 ## Build & run
 
