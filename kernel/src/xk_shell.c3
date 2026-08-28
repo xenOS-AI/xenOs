@@ -111,7 +111,21 @@ fn void shell_run(char* line)
     skip_cmd(line, &arg[0], TERM_CW);
 
     if (cmd[0] == 0) { return; }
-    else if (streq(&cmd[0], "help"))  { shell_help(); }
+    else if (streq(&cmd[0], "help"))   { shell_help(); }
+    else if (streq(&cmd[0], "aicfg"))  { ai_cfg_show(); }
+    else if (streq(&cmd[0], "aichat"))
+    {
+        // headless chat: `aichat <prompt>` via the client (mirrors the chat box)
+        if (arg[0] == 0) { term_puts("usage: aichat <prompt>\r\n"); }
+        else
+        {
+            AiChatResult res;
+            int rc = ai_chat(&arg[0], &res);
+            if (rc == -2) { term_puts("AI not configured (aicfg)\r\n"); }
+            else if (rc != 0) { term_puts("AI transport error\r\n"); }
+            else { term_puts(&res.content[0]); term_puts("\r\n"); }
+        }
+    }
     else if (streq(&cmd[0], "ls"))    { vfs_ls(); }
     else if (streq(&cmd[0], "cat"))   { vfs_cat(&arg[0]); }
     else if (streq(&cmd[0], "echo"))  { term_puts(&arg[0]); term_puts("\r\n"); }

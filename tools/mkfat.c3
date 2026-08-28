@@ -92,10 +92,11 @@ fn int xk_host_main(int argc, char** argv) @export("xk_host_main")
     put_u16(&fat[0], 0, 0xFFF8);       // media descriptor + end
     put_u16(&fat[0], 2, 0xFFFF);       // cluster 2 (MOTD) = end of chain
     put_u16(&fat[0], 4, 0xFFFF);       // cluster 3 (README) = end of chain
+    put_u16(&fat[0], 6, 0xFFFF);       // cluster 4 (AI.CFG) = end of chain
     lx_lseek(fd, FAT_START * SECTOR, SEEK_SET);
     lx_write(fd, &fat[0], FAT_SECTORS * SECTOR);
 
-    // ---- root directory: 512 entries, 2 files ----
+    // ---- root directory: 512 entries, 3 files ----
     char[ROOT_SECTORS * SECTOR] root;
     memset(&root[0], 0, ROOT_SECTORS * SECTOR);
     // entry 0: MOTD.TXT, size 22 (bytes of "Welcome to xenOS.\r\n")
@@ -108,16 +109,27 @@ fn int xk_host_main(int argc, char** argv) @export("xk_host_main")
     root[32 + 11] = (char)0x20;
     put_u16(&root[0], 26 + 32, 3);
     put_u32(&root[0], 28 + 32, 47);    // len("This file lives on the xenOS FAT16 disk.\r\n")
+    // entry 2: AI.CFG, size of the placeholder config below
+    const char* AICFG = "model=hobby-model\nendpoint=http://10.0.2.2:9080\n"
+                        "token=PLACEHOLDER_TOKEN_CHANGE_ME\n";
+    put_name(&root[64], (char*)"AI", (char*)"CFG");
+    root[64 + 11] = (char)0x20;
+    put_u16(&root[0], 26 + 64, 4);
+    uint aicfg_len = 0;
+    while (AICFG[aicfg_len] != 0) aicfg_len++;
+    put_u32(&root[0], 28 + 64, aicfg_len);
     lx_lseek(fd, ROOT_START * SECTOR, SEEK_SET);
     lx_write(fd, &root[0], ROOT_SECTORS * SECTOR);
 
-    // ---- file data at cluster 2 (MOTD) and cluster 3 (README) ----
+    // ---- file data at clusters 2, 3, 4 ----
     const char* MOTD = "Welcome to xenOS.\r\n";
     lx_lseek(fd, (DATA_START + 0) * SECTOR, SEEK_SET);
     lx_write(fd, (char*)MOTD, 22);
     const char* README = "This file lives on the xenOS FAT16 disk.\r\n";
     lx_lseek(fd, (DATA_START + 1) * SECTOR, SEEK_SET);
     lx_write(fd, (char*)README, 47);
+    lx_lseek(fd, (DATA_START + 2) * SECTOR, SEEK_SET);
+    lx_write(fd, (char*)AICFG, aicfg_len);
 
     lx_close(fd);
     lx_write(2, (char*)"mkfat: wrote build/fat.img (8 MiB FAT16)\n", 41);

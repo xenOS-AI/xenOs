@@ -137,6 +137,9 @@ fn void xk_boot()
     wm_init();
     wm_register_apps();
     fat_mount();                 // real on-disk FAT16 volume (build/fat.img)
+    ai_cfg_init();               // read AI.CFG (model/endpoint/token) from FAT
+    ai_client_init();            // register the AI client transport (mock for now)
+    chat_open_window();          // AI-first chat box on the desktop
 
     thread_init();
     thread_spawn_demos();

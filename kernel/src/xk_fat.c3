@@ -45,20 +45,39 @@ fn int fat_get_cluster(uint cl, uint* val)
     return 0;
 }
 
-// Case-insensitive match: is `arg` a prefix of the 8.3 stored short name?
-// The matching stops at the first stored padding space, so "motd" -> "MOTD"
-// matches the entry stored as "MOTD     TXT" (we only compare the first N
-// characters, where N = length("motd"), which are the name itself).
+// Case-insensitive prefix match between an 8.3 short name and a user argument.
+// Normalises both to a canonical letter string (lowercase, '.' removed, 8.3
+// name+extension concatenated) and checks `arg` is a prefix. So "motd" matches
+// "MOTD     TXT", "readme" matches "README    TXT", and "AI.CFG" matches
+// "AI       CFG" (the '.' in the arg is dropped).
 fn bool fatname_match(char* stored8_3, char* arg)
 {
-    int j = 0;
-    while (arg[j] != 0)
+    char[12] want;
+    char[12] have;
+    // `have` = stored name (0..7) + ext (8..10), trailing spaces dropped, lowercased
+    int h2 = 0;
+    for (uint k = 0; k < 11; k++)
     {
-        char ac = arg[j];
-        if (ac >= 'a' && ac <= 'z') { ac = (char)(ac - 'a' + 'A'); }   // uppercase arg
-        if ((char)stored8_3[j] == (char)0x20) return false;             // arg longer than the real name
-        if ((char)stored8_3[j] != ac) return false;
+        char ch = (k < 8) ? stored8_3[k] : stored8_3[k];
+        if (ch == (char)0x20) continue;
+        have[h2++] = (char)((ch >= 'A' && ch <= 'Z') ? ch - 'A' + 'a' : ch);
+    }
+    have[h2] = 0;
+    // `want` = arg lowercased, '.' removed
+    int wn = 0;
+    uint j = 0;
+    while (arg[j] != 0 && wn < 11)
+    {
+        char ch = arg[j];
+        if (ch == '.') { j++; continue; }
+        want[wn++] = (char)((ch >= 'A' && ch <= 'Z') ? ch - 'A' + 'a' : ch);
         j++;
+    }
+    want[wn] = 0;
+    // prefix compare
+    for (int i = 0; i < wn; i++)
+    {
+        if (want[i] != have[i]) return false;
     }
     return true;
 }
