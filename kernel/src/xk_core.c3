@@ -144,6 +144,7 @@ fn void xk_boot()
     chat_open_window();          // AI-first chat box on the desktop
 
     sha256_selftest();         // prove the from-scratch TLS hash at boot (clean serial)
+    hmac_selftest();           // prove HMAC-SHA256 (TLS PRF/Finished) at boot
 
     thread_init();
     thread_spawn_demos();
