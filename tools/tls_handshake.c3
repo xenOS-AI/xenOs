@@ -681,14 +681,17 @@ fn int xk_host_main(int argc, char** argv) @export("xk_host_main")
     finmsg[0] = 20; finmsg[1] = 0; finmsg[2] = 0; finmsg[3] = 12;
     for (int i = 0; i < 12; i++) finmsg[4+i] = cfin[i];
     char[8] seq = {0,0,0,0,0,0,0,0};
+    if (argc > 2) { seq[7] = (char)(argv[2][0] - '0'); }   // optional seq arg
     char[12] nonce;
     for (int i = 0; i < 4; i++) nonce[i] = civ[i];
     for (int i = 0; i < 8; i++) nonce[4+i] = seq[i];
     char[13] aad;
     for (int i = 0; i < 8; i++) aad[i] = seq[i];
-    aad[8] = T_HS; aad[9] = 3; aad[10] = 3; aad[11] = 0; aad[12] = 16;   // AAD len = TLSCompressed (plaintext) length
+    aad[8] = T_HS; aad[9] = 3; aad[10] = 3; aad[11] = 0; aad[12] = 32;   // AAD len = on-wire record length (server reads it)
     char[16] finct; char[16] fintag;
     gcm(&ckey[0], &nonce[0], &aad[0], 13, &finmsg[0], 16, &finct[0], &fintag[0]);
+    xw(1,(char*)"DBG car=",7); puthexb(&car[0],32); xw(1,(char*)"\n",1);
+    xw(1,(char*)"DBG srvr=",8); puthexb(&srv_random[0],32); xw(1,(char*)"\n",1);
     xw(1,(char*)"DBG prem=",8); puthexb(&prem[0],32); xw(1,(char*)"\n",1);
     char[32] dbgqax; char[32] dbgqay;
     limbs_to_be(&qax[0], &dbgqax[0]);
