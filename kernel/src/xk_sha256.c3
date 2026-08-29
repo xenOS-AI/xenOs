@@ -221,6 +221,24 @@ fn void sha256_selftest()
     xk_puts(ok ? "  PASS\r\n" : "  FAIL\r\n");
 }
 
+// verify a 16-byte digest against its lowercase-hex encoding
+fn bool hex16_matches(char* digest, char* hex)
+{
+    for (int i = 0; i < 16; i++)
+    {
+        uint hi = 0;
+        uint lo = 0;
+        char c = hex[i * 2];
+        if (c >= '0' && c <= '9') { hi = (uint)(c - '0'); }
+        else { hi = (uint)(10 + (c - 'a')); }
+        c = hex[i * 2 + 1];
+        if (c >= '0' && c <= '9') { lo = (uint)(c - '0'); }
+        else { lo = (uint)(10 + (c - 'a')); }
+        if ((uint)digest[i] != (char)((hi << 4) | lo)) return false;
+    }
+    return true;
+}
+
 // verify a 32-byte digest against its lowercase-hex encoding
 fn bool hex32_matches(char* digest, char* hex)
 {
