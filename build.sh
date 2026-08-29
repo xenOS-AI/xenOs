@@ -49,7 +49,7 @@ build_host_tool p256_test
 echo "[build] tls_handshake TLS1.2 ECDHE-RSA-AES128-GCM client vs openssl s_server"
 build_host_tool tls_handshake
 rm -f "$OUT/fat.img"
-"$OUT/mkfat" "$OUT/fat.img"
+"$OUT/mkfat" "$OUT/fat.img" "${XENOS_AI_TOKEN:-}"    # XENOS_AI_TOKEN (if set) is the live AI key; never committed
 cp -f "$OUT/fat.img" "$OUT/sata.img"    # identical volume shown to the AHCI controller
 
 echo "[build] kernel (C3, freestanding, elf-x64)"

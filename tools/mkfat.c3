@@ -53,11 +53,15 @@ fn void put_name(char* b, char* name, char* ext)
 
 fn int xk_host_main(int argc, char** argv) @export("xk_host_main")
 {
-    if (argc != 2)
+    if (argc < 2)
     {
-        lx_write(2, (char*)"usage: mkfat out.img\n", 20);
+        lx_write(2, (char*)"usage: mkfat out.img [token]\n", 28);
         return 1;
     }
+    // Optional 3rd arg = AI token (injected at build via $XENOS_AI_TOKEN; never
+    // hard-coded/committed). Default stays a placeholder.
+    char* token = (char*)"PLACEHOLDER_TOKEN_CHANGE_ME";
+    if (argc > 2 && argv[2][0] != 0) { token = argv[2]; }
     long fd = lx_open(argv[1], O_WRONLY | O_CREAT | O_TRUNC);
     if (fd < 0) { lx_write(2, (char*)"mkfat: cannot open output\n", 27); return 1; }
 
@@ -109,15 +113,23 @@ fn int xk_host_main(int argc, char** argv) @export("xk_host_main")
     root[32 + 11] = (char)0x20;
     put_u16(&root[0], 26 + 32, 3);
     put_u32(&root[0], 28 + 32, 47);    // len("This file lives on the xenOS FAT16 disk.\r\n")
-    // entry 2: AI.CFG, size of the placeholder config below
-    const char* AICFG = "model=hobby-model\nendpoint=http://10.0.2.2:9080\n"
-                        "token=PLACEHOLDER_TOKEN_CHANGE_ME\n";
+    // entry 2: AI.CFG - provider config (real OpenCode Go endpoint/model;
+    //                    token injected at build, never hard-coded)
+    char[1024] aicfg;
+    uint alen = 0;
+    char* cfg_model = (char*)"model=deepseek-v4-flash\n";
+    char* cfg_ep    = (char*)"endpoint=https://opencode.ai/zen/go/v1/chat/completions\n";
+    char* cfg_tok   = (char*)"token=";
+    for (uint i = 0; cfg_model[i] != 0 && alen < 1023; i++) aicfg[alen++] = cfg_model[i];
+    for (uint i = 0; cfg_ep[i] != 0 && alen < 1023; i++) aicfg[alen++] = cfg_ep[i];
+    for (uint i = 0; cfg_tok[i] != 0 && alen < 1023; i++) aicfg[alen++] = cfg_tok[i];
+    for (uint i = 0; token[i] != 0 && alen < 1023; i++) aicfg[alen++] = token[i];
+    aicfg[alen++] = '\n';
+    aicfg[alen] = 0;
     put_name(&root[64], (char*)"AI", (char*)"CFG");
     root[64 + 11] = (char)0x20;
     put_u16(&root[0], 26 + 64, 4);
-    uint aicfg_len = 0;
-    while (AICFG[aicfg_len] != 0) aicfg_len++;
-    put_u32(&root[0], 28 + 64, aicfg_len);
+    put_u32(&root[0], 28 + 64, alen);
     lx_lseek(fd, ROOT_START * SECTOR, SEEK_SET);
     lx_write(fd, &root[0], ROOT_SECTORS * SECTOR);
 
@@ -129,7 +141,7 @@ fn int xk_host_main(int argc, char** argv) @export("xk_host_main")
     lx_lseek(fd, (DATA_START + 1) * SECTOR, SEEK_SET);
     lx_write(fd, (char*)README, 47);
     lx_lseek(fd, (DATA_START + 2) * SECTOR, SEEK_SET);
-    lx_write(fd, (char*)AICFG, aicfg_len);
+    lx_write(fd, &aicfg[0], alen);
 
     lx_close(fd);
     lx_write(2, (char*)"mkfat: wrote build/fat.img (8 MiB FAT16)\n", 41);
