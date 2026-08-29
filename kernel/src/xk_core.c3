@@ -143,6 +143,8 @@ fn void xk_boot()
     ai_cfg_init();               // read AI.CFG (model/endpoint/token) from FAT
     chat_open_window();          // AI-first chat box on the desktop
 
+    sha256_selftest();         // prove the from-scratch TLS hash at boot (clean serial)
+
     thread_init();
     thread_spawn_demos();
 

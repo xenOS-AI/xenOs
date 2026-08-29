@@ -113,6 +113,22 @@ fn void shell_run(char* line)
     if (cmd[0] == 0) { return; }
     else if (streq(&cmd[0], "help"))   { shell_help(); }
     else if (streq(&cmd[0], "aicfg"))  { ai_cfg_show(); }
+    else if (streq(&cmd[0], "sha256"))
+    {
+        if (arg[0] == 0) { term_puts("usage: sha256 <text>\r\n"); }
+        else
+        {
+            char[32] d;
+            sha256(&arg[0], ai_strlen(&arg[0]), &d[0]);
+            char* hexc = (char*)"0123456789abcdef";
+            for (int i = 0; i < 32; i++)
+            {
+                term_put(hexc[((int)d[i] >> 4) & 0xF]);
+                term_put(hexc[(int)d[i] & 0xF]);
+            }
+            term_puts("\r\n");
+        }
+    }
     else if (streq(&cmd[0], "journal"))
     {
         journal_print();
