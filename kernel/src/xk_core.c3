@@ -145,6 +145,7 @@ fn void xk_boot()
 
     sha256_selftest();         // prove the from-scratch TLS hash at boot (clean serial)
     hmac_selftest();           // prove HMAC-SHA256 (TLS PRF/Finished) at boot
+    tls_prf_selftest();        // prove the TLS 1.2 P_SHA256 key derivation
 
     thread_init();
     thread_spawn_demos();
