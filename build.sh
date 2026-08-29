@@ -40,6 +40,8 @@ echo "[build] ai_mock host AI provider server (C3, freestanding)"
 build_host_tool ai_mock
 echo "[build] sha256_test TLS-hash self-test (C3, freestanding)"
 build_host_tool sha256_test
+echo "[build] tls_clienthello TLS interop emitter (C3, freestanding)"
+build_host_tool tls_clienthello
 rm -f "$OUT/fat.img"
 "$OUT/mkfat" "$OUT/fat.img"
 cp -f "$OUT/fat.img" "$OUT/sata.img"    # identical volume shown to the AHCI controller

@@ -66,6 +66,53 @@ fn void tls_key_block(char* ms, char* sr, char* cr, char* out, uint outlen)
     tls_prf(ms, 48, (char*)"key expansion", 13, &seed[0], 64, out, outlen);
 }
 
+// ======================= Record layer (RFC 5246 §6) =========================
+const ushort TLS_VER_12   = 0x0303;
+const char  TLS_CT_CHANGE = 20;   // change_cipher_spec
+const char  TLS_CT_ALERT  = 21;
+const char  TLS_CT_HANDSHAKE = 22;
+const char  TLS_CT_APP    = 23;
+const char  TLS_HANDSHAKE_CLIENT_HELLO = 1;
+const char  TLS_HANDSHAKE_SERVER_HELLO = 2;
+const char  TLS_HANDSHAKE_FINISHED     = 20;
+
+// Frame a TLS record: 5-byte header (type, ver=0x0303, length) + payload.
+fn void tls_record(char* out, uint* olen, char ct, char* payload, uint plen)
+{
+    out[0] = ct;
+    out[1] = (char)(TLS_VER_12 >> 8);
+    out[2] = (char)(TLS_VER_12 & 0xFF);
+    out[3] = (char)((plen >> 8) & 0xFF);
+    out[4] = (char)(plen & 0xFF);
+    for (uint i = 0; i < plen; i++) out[5 + i] = payload[i];
+    *olen = 5 + plen;
+}
+
+// Build a minimal TLS 1.2 ClientHello (handshake type 1) as a full record.
+// cipher: TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 (0xC02F), null compression.
+fn void tls_clienthello(char* out, uint* olen, char* random32)
+{
+    char[300] body;
+    uint b = 0;
+    body[b++] = (char)(TLS_VER_12 >> 8);   // client version
+    body[b++] = (char)(TLS_VER_12 & 0xFF);
+    for (int i = 0; i < 32; i++) body[b++] = random32[i];
+    body[b++] = 0;                          // session id length 0
+    body[b++] = 0x00; body[b++] = 0x02;     // cipher suites length = 2 (one)
+    body[b++] = 0xC0; body[b++] = 0x2F;     // ECDHE_RSA_AES128_GCM_SHA256
+    body[b++] = 0x01; body[b++] = 0x00;     // compression: length 1, null
+    body[b++] = 0x00; body[b++] = 0x00;     // extensions length 0
+
+    // handshake header (type + 3-byte length)
+    char[304] hs;
+    hs[0] = TLS_HANDSHAKE_CLIENT_HELLO;
+    hs[1] = (char)(b >> 16);
+    hs[2] = (char)((b >> 8) & 0xFF);
+    hs[3] = (char)(b & 0xFF);
+    for (uint i = 0; i < b; i++) hs[4 + i] = body[i];
+    tls_record(out, olen, TLS_CT_HANDSHAKE, &hs[0], 4 + b);
+}
+
 // ---- boot-time self-test: compare against a reference P_SHA256 output ----
 fn void tls_prf_selftest()
 {
