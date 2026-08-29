@@ -224,6 +224,31 @@ fn void scalar_mult(uint* rx, uint* ry, uint* k)
     mp_copy(rx, &rxb[0]); mp_copy(ry, &ryb[0]);
 }
 
+// R = k * P  (double-and-add on an ARBITRARY point P) - the ECDH shared secret.
+fn void scalar_mult_point(uint* rx, uint* ry, uint* k,
+                          uint* px, uint* py, uint pinf)
+{
+    uint[8] rxb; uint[8] ryb; uint rzinf = 1;
+    for (int i = 255; i >= 0; i--)
+    {
+        if (rzinf != 1)
+        {
+            uint[8] nx; uint[8] ny; uint ni = 0;
+            point_double(&nx[0], &ny[0], &rxb[0], &ryb[0]);
+            mp_copy(&rxb[0], &nx[0]); mp_copy(&ryb[0], &ny[0]);
+            rzinf = 0;
+        }
+        if (mp_getbit(k, (uint)i) == 1)
+        {
+            uint[8] ax; uint[8] ay; uint[1] ai;
+            point_add(&ax[0], &ay[0], &ai[0], &rxb[0], &ryb[0], rzinf, px, py, pinf);
+            mp_copy(&rxb[0], &ax[0]); mp_copy(&ryb[0], &ay[0]);
+            rzinf = (int)ai[0];
+        }
+    }
+    mp_copy(rx, &rxb[0]); mp_copy(ry, &ryb[0]);
+}
+
 // print a number as 64 lowercase hex chars
 fn void print_hex(uint* a)
 {
@@ -249,5 +274,10 @@ fn int xk_host_main(int argc, char** argv) @export("xk_host_main")
     xwrite(1, (char*)"qyp=", 3); print_hex(&qyp[0]); xwrite(1, (char*)"\n", 1);
     xwrite(1, (char*)"EXPECT qxp=d8cd12ea5c67f2f8a00c1124893edcfa6754c4d6cede6be13bdf2295c810a97f\n", 68);
     xwrite(1, (char*)"EXPECT qyp=a5a89d2d2a360c0ca9a4d6c7c9ed4b28d3e199d6627f2e696d689c310a5b0f48\n", 68);
+    // ---- ECDH shared secret: S = d * QA (QA = d*G from above) ----
+    uint[8] sx; uint[8] sy;
+    scalar_mult_point(&sx[0], &sy[0], &d[0], &qxp[0], &qyp[0], 0);
+    xwrite(1, (char*)"shared_x=", 9); print_hex(&sx[0]); xwrite(1, (char*)"\n", 1);
+    xwrite(1, (char*)"  expect 65f6f6b376a972fab4440c4ae044b99260a9aeacc537a3ed66961e1f6f713e3b\n", 70);
     return 0;
 }
