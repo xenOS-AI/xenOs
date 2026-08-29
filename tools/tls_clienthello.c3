@@ -41,7 +41,31 @@ fn long tls_clienthello(char* out, char* random32)
     body[b++] = 0x00; body[b++] = 0x02;
     body[b++] = 0xC0; body[b++] = 0x2F;
     body[b++] = 0x01; body[b++] = 0x00;
+    // ---- extensions so OpenSSL can do ECDHE ----
+    // 1. supported_groups (10): P-256(0x0017), P-384(0x0018)
+    long extstart = b;
+    // we must know the total extension length; write a placeholder then patch it
     body[b++] = 0x00; body[b++] = 0x00;
+    // supported_groups
+    body[b++] = 0x00; body[b++] = 0x0a;   // type
+    body[b++] = 0x00; body[b++] = 0x06;   // len = 6
+    body[b++] = 0x00; body[b++] = 0x04;   // vector len
+    body[b++] = 0x00; body[b++] = 0x17;   // P-256
+    body[b++] = 0x00; body[b++] = 0x18;   // P-384
+    // ec_point_formats (11)
+    body[b++] = 0x00; body[b++] = 0x0b;
+    body[b++] = 0x00; body[b++] = 0x02;
+    body[b++] = 0x01; body[b++] = 0x00;   // uncompressed
+    // signature_algorithms (13): rsa_pkcs1_sha256(0x0401), rsa_pkcs1_sha384(0x0501)
+    body[b++] = 0x00; body[b++] = 0x0d;
+    body[b++] = 0x00; body[b++] = 0x06;
+    body[b++] = 0x00; body[b++] = 0x04;
+    body[b++] = 0x04; body[b++] = 0x01;
+    body[b++] = 0x05; body[b++] = 0x01;
+    long extlen = b - (extstart + 2);
+    body[extstart] = (char)((extlen >> 8) & 0xFF);
+    body[extstart + 1] = (char)(extlen & 0xFF);
+    // ---- handshake header ----
     char[304] hs;
     hs[0] = 1;
     hs[1] = (char)(b >> 16);
