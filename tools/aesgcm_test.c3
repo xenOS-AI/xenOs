@@ -251,6 +251,54 @@ fn void aes128_gcm_encrypt(char* key, char* iv12, char* pt, uint plen, char* ct,
     for (int i = 0; i < 16; i++) tag[i] = (char)(ej0[i] ^ g[i]);
 }
 
+// AAD-capable GCM (used by TLS records): same as above but GHASH over
+// AAD(pad) || CT(pad) || [lenA:8][lenC:8].
+fn void gcm_aad(char* key, char* iv12, char* aad, uint aadlen, char* pt, uint plen, char* ct, char* tag)
+{
+    uint[44] w;
+    aes128_expand(key, &w[0]);
+    char[16] zero;
+    memset(&zero[0],0,16);
+    char[16] hkey;
+    aes128_encrypt_block(&zero[0], &hkey[0], &w[0]);
+    char[16] j0;
+    for (int i = 0; i < 12; i++) j0[i] = iv12[i];
+    j0[12] = 0; j0[13] = 0; j0[14] = 0; j0[15] = 1;
+    char[16] ej0;
+    aes128_encrypt_block(&j0[0], &ej0[0], &w[0]);
+    uint blocks = (plen + 15) / 16;
+    for (uint b = 0; b < blocks; b++)
+    {
+        char[16] ctr;
+        for (int i = 0; i < 12; i++) ctr[i] = j0[i];
+        uint cnt = (uint)(b + 2);
+        ctr[12] = (char)(cnt >> 24); ctr[13] = (char)((cnt >> 16) & 0xFF);
+        ctr[14] = (char)((cnt >> 8) & 0xFF); ctr[15] = (char)(cnt & 0xFF);
+        char[16] stream;
+        aes128_encrypt_block(&ctr[0], &stream[0], &w[0]);
+        for (int j = 0; j < 16; j++)
+        {
+            uint idx = b * 16 + (uint)j;
+            if (idx < plen) ct[idx] = (char)(pt[idx] ^ stream[j]);
+        }
+    }
+    char[1024] gd;
+    uint gl = 0;
+    uint apad = aadlen + (16 - (aadlen % 16)) % 16;
+    for (uint i = 0; i < aadlen; i++) gd[gl++] = aad[i];
+    for (uint i = aadlen; i < apad; i++) gd[gl++] = 0;
+    uint cpad = plen + (16 - (plen % 16)) % 16;
+    for (uint i = 0; i < plen; i++) gd[gl++] = ct[i];
+    for (uint i = plen; i < cpad; i++) gd[gl++] = 0;
+    ulong la = (ulong)aadlen * 8;
+    for (int i = 7; i >= 0; i--) gd[gl++] = (char)((la >> (i*8)) & 0xFF);
+    ulong lc = (ulong)plen * 8;
+    for (int i = 7; i >= 0; i--) gd[gl++] = (char)((lc >> (i*8)) & 0xFF);
+    char[16] g;
+    ghash(&hkey[0], &gd[0], gl, &g[0]);
+    for (int i = 0; i < 16; i++) tag[i] = (char)(ej0[i] ^ g[i]);
+}
+
 // ---- test: NIST AES-128-GCM vector ---- 
 fn void puthexb(char* d, uint n)
 {
@@ -269,6 +317,19 @@ fn void test_gcm()
         aes128_gcm_encrypt(&zkey[0], &ziv[0], (char*)"", 0, &zctB[0], &ztag[0]);
         xwrite(1,(char*)"EMPTY TAG = ",12); puthexb(&ztag[0],16); xwrite(1,(char*)"\n",1);
         xwrite(1,(char*)"  expect 58e2fccefa7e3061367f1d57a4e7455a\n",38);
+    }
+    // ---- AAD-bearing case vs OpenSSL EVP ----
+    {
+        // key=000102..0f nonce=000102030405060708090a0b aad=00000000000000001603030010 pt=00..0f(16)
+        char[16] key = {0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f};
+        char[12] iv  = {0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0a,0x0b};
+        char[13] aad = {0,0,0,0,0,0,0,0,0x16,0x03,0x03,0x00,0x10};
+        char[16] pt;
+        for (int i=0;i<16;i++) pt[i]=(char)i;
+        char[16] ct; char[16] tag;
+        gcm_aad(&key[0],&iv[0],&aad[0],13,&pt[0],16,&ct[0],&tag[0]);
+        xwrite(1,(char*)"AAD CT = ",9); puthexb(&ct[0],16); xwrite(1,(char*)"\n",1);
+        xwrite(1,(char*)"AAD TAG= ",9); puthexb(&tag[0],16); xwrite(1,(char*)"\n",1);
     }
     // ---- gf_mult convention check vs a python reference ----
     char[16] ga = {0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f,0x10};

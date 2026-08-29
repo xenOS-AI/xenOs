@@ -46,6 +46,8 @@ echo "[build] aesgcm_test AES-128-GCM vector self-test (C3, freestanding)"
 build_host_tool aesgcm_test
 echo "[build] p256_test P-256 scalar-mult self-test (C3, freestanding)"
 build_host_tool p256_test
+echo "[build] tls_handshake TLS1.2 ECDHE-RSA-AES128-GCM client vs openssl s_server"
+build_host_tool tls_handshake
 rm -f "$OUT/fat.img"
 "$OUT/mkfat" "$OUT/fat.img"
 cp -f "$OUT/fat.img" "$OUT/sata.img"    # identical volume shown to the AHCI controller
