@@ -2,8 +2,8 @@ module xk;
 
 // ---- PS/2 mouse driver (IRQ12, 3-byte standard packets) ----
 
-const int SCREEN_W = 800;
-const int SCREEN_H = 600;
+const int SCREEN_W = FB_W;
+const int SCREEN_H = FB_H;
 
 int mouse_x;
 int mouse_y;

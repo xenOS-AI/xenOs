@@ -112,7 +112,9 @@ fn void xk_boot()
 
     if (bi.bpp == 32)
     {
-        xk_puts("[display] framebuffer initialised (800x600x32)\r\n");
+        xk_puts("[display] framebuffer initialised ("); 
+        xk_putdec((int)bi.width); xk_putc('x'); xk_putdec((int)bi.height);
+        xk_puts("x32)\r\n");
         font_init();
         xk_puts("[fb] 8x8 font ready\r\n");
     }

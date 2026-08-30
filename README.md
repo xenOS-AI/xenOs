@@ -12,7 +12,7 @@ and a shell — with **zero borrowed code**.
 * Interrupts: IDT from 48 hand-written asm stubs, PIC remap, PIT 100Hz timer,
   exception dumping.
 * PS/2 **keyboard** and **mouse** drivers (IRQ1 / IRQ12).
-* VESA **framebuffer** (800x600x32) with a RAM shadow buffer + dirty-rect blit
+* VESA **framebuffer** (1920x1080x32) with a RAM shadow buffer + dirty-rect blit
   (TCG's VRAM is slow, so only damaged regions are copied) and a hand-drawn
   8x8 bitmap font.
 * Preemptive round-robin **multitasking** — the PIT timer preempts every task

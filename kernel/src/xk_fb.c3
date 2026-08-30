@@ -1,8 +1,8 @@
 module xk;
 
 // ---- Framebuffer graphics: shadow buffer (fast RAM) + VRAM blit ----
-const int FB_W = 800;
-const int FB_H = 600;
+const int FB_W = 1920;
+const int FB_H = 1080;
 const ulong VRAM = 0xFD000000;      // QEMU stdvga linear framebuffer
 const ulong SHADOW = 0x02000000;    // free RAM >= this address
 

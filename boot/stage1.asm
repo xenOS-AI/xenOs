@@ -3,7 +3,7 @@
 ; Runs in real mode at 0x7C00.  512 bytes, 0xAA55 terminator.
 ;
 ;  1. init COM1 & trace to serial (debug)
-;  2. set a VESA linear-framebuffer mode (1024x768x32, fallback 800x600x32)
+;  2. set a VESA linear-framebuffer mode (1920x1080x32, fallback 800x600x32)
 ;  3. write BootInfo @ phys 0x7000
 ;  4. load Stage2 (LBA 1..60) -> 0x8000, kernel (patched LBA) -> 0x100000
 ;  5. jump to stage2 (real mode)
@@ -76,7 +76,7 @@ load_file:              ; int13h AH=42 LBA read via [dap]
 .ok: ret
 
 ;------------------------------------------------------------------------------
-vbe_set_mode:           ; set 1024x768x32 LFB via the Bochs VBE IO interface
+vbe_set_mode:           ; set 1920x1080x32 LFB via the Bochs VBE IO interface
 ;------------------------------------------------------------------------------
     pushad
     ; zero bootinfo block
@@ -98,14 +98,14 @@ vbe_set_mode:           ; set 1024x768x32 LFB via the Bochs VBE IO interface
     mov ax, 0x0001
     out dx, ax
     mov dx, 0x1CF
-    mov ax, 800
+    mov ax, 1920
     out dx, ax
     ; 3) Y resolution
     mov dx, 0x1CE
     mov ax, 0x0002
     out dx, ax
     mov dx, 0x1CF
-    mov ax, 600
+    mov ax, 1080
     out dx, ax
     ; 4) bits per pixel
     mov dx, 0x1CE
@@ -122,11 +122,11 @@ vbe_set_mode:           ; set 1024x768x32 LFB via the Bochs VBE IO interface
     mov ax, 0x0041
     out dx, ax
 
-    ; bootinfo (QEMU `-vga std` LFB at 0xFD000000; 800x600x32, pitch = width*4)
+    ; bootinfo (QEMU `-vga std` LFB at 0xFD000000; 1920x1080x32, pitch = width*4)
     mov dword [BI_FB_ADDR], 0xFD000000
-    mov dword [BI_WIDTH], 800
-    mov dword [BI_HEIGHT], 600
-    mov dword [BI_PITCH], 3200
+    mov dword [BI_WIDTH], 1920
+    mov dword [BI_HEIGHT], 1080
+    mov dword [BI_PITCH], 7680
     mov dword [BI_BPP], 32
     mov dword [BI_MEM_MB], 96
     movzx eax, byte [drive]
