@@ -57,8 +57,8 @@ fn void tcp_send(uint flags, uint seq, uint ack, char* payload, int plen)
     th[6] = (char)((seq >> 8) & 0xFF);  th[7] = (char)(seq & 0xFF);
     th[8] = (char)((ack >> 24) & 0xFF); th[9] = (char)((ack >> 16) & 0xFF);
     th[10] = (char)((ack >> 8) & 0xFF); th[11] = (char)(ack & 0xFF);
-    th[12] = (char)(0x50 | (flags & 0x1F));    // data offset 5 (20 bytes) + flags
-    th[13] = 0;                                // window scale etc
+    th[12] = (char)0x50;                    // data offset 5 (20 bytes)
+    th[13] = (char)(flags & 0x1F);          // TCP flags (byte 13, not 12!)
     th[14] = 0x40; th[15] = 0x00;              // window = 0x40
     th[16] = 0; th[17] = 0;                    // checksum placeholder
     th[18] = 0; th[19] = 0;                    // urgent pointer

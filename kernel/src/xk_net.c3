@@ -216,12 +216,32 @@ fn void net_poll()
     }
 }
 
+// ---- boot-time network self-test (headless-verifiable) ----
+fn void net_selftest()
+{
+    if (!g_net_up) return;
+    xk_puts("[net] selftest: resolving gateway 10.0.2.2 via ARP\\r\\n");
+    arp_request();
+    // poll for a short while (ARP reply), print what happened
+    for (int t = 0; t < 200000; t++)
+    {
+        net_poll();
+        if (g_gw_mac_valid) break;
+        xk_pause();
+    }
+    xk_puts("[net] selftest: gateway ARP resolved = ");
+    xk_putdec((int)(g_gw_mac_valid ? 1 : 0));
+    xk_puts("\\r\\n");
+}
+
 // ---- top-level: detect + init e1000 ----
 fn bool net_init()
 {
     g_net_up = false;
     // find the e1000 on PCI (vendor 0x8086, device 0x100E)
     ulong bar = 0;
+    uint ebus = 0;
+    uint edev = 0;
     for (uint bus = 0; bus < 2 && bar == 0; bus++)
     {
         for (uint dev = 0; dev < 32 && bar == 0; dev++)
@@ -233,6 +253,7 @@ fn bool net_init()
                 uint did = vd >> 16;
                 if (vend == E1000_VID && did == E1000_DID)
                 {
+                    ebus = bus; edev = dev;
                     bar = (ulong)(pci_rd(bus, dev, 0, 0x10) & 0xFFFFFFF0u);
                 }
             }
@@ -243,6 +264,9 @@ fn bool net_init()
         xk_puts("[net] no e1000 NIC found; networking disabled\r\n");
         return false;
     }
+    // CRITICAL: enable bus-mastering (PCI Command bit 0x04) or QEMU disables
+    // the device's DMA engine entirely (pci_dma_read/write return nothing).
+    pci_enable_bus_master(ebus, edev, 0);
     g_net_bar = bar;
     xk_puts("[net] e1000 NIC @ bar0=");
     xk_puthex(bar);

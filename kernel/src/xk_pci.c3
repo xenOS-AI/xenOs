@@ -20,6 +20,24 @@ fn uint pci_rd(uint bus, uint dev, uint func, uint reg)
     return xk_inl(PCI_DATA);
 }
 
+// PCI configuration-space WRITE (32-bit). Needed to set the Command register
+// Bus-Master-Enable bit, without which QEMU's PCI device DMA is disabled and
+// pci_dma_read/write silently return nothing (the cause of the e1000+AHCI
+// "descriptors accepted but no data lands" failures).
+fn void pci_wr(uint bus, uint dev, uint func, uint reg, uint val)
+{
+    uint addr = 0x80000000u | (bus << 16) | (dev << 11) | (func << 8) | (reg & 0xFC);
+    xk_outl(PCI_ADDR, addr);
+    xk_outl(PCI_DATA, val);
+}
+
+// Enable bus-mastering on a device (Command reg bit 0x04). Required for DMA.
+fn void pci_enable_bus_master(uint bus, uint dev, uint func)
+{
+    uint cmd = pci_rd(bus, dev, func, 0x04);
+    pci_wr(bus, dev, func, 0x04, (cmd & 0xFFFF) | 0x0007u);   // IO|MEM|Master
+}
+
 fn char pci_hexc(uint d)
 {
     if (d < 10) return (char)('0' + d);
@@ -60,6 +78,8 @@ fn void pci_init()
     xk_puts("[pci] enumerating PCI bus...\r\n");
     int found = 0;
     ulong ahci_bar = 0;
+    uint abus = 0;
+    uint adev = 0;
     for (uint bus = 0; bus < 2; bus++)
     {
         for (uint dev = 0; dev < 32; dev++)
@@ -80,7 +100,10 @@ fn void pci_init()
                 // Grab its ABAR from BAR5 (config reg 0x24).
                 if ((pci_rd(bus, dev, func, 0x08) >> 16) == 0x0106)
                 {
+                    abus = bus; adev = dev;
                     ahci_bar = (ulong)(pci_rd(bus, dev, func, 0x24) & 0xFFFFFFF0u);
+                    // enable bus-mastering so QEMU/real HW lets the AHCI DMA
+                    pci_enable_bus_master(bus, dev, func);
                 }
                 if (func == 0)
                 {

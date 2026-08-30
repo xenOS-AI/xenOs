@@ -133,6 +133,7 @@ fn void xk_boot()
 
     pci_init();
     if (net_init()) { http_register(); }   // e1000 NIC -> live HTTP AI transport
+    net_selftest();                        // boot-time ARP probe (headless-verifiable)
 
     xk_intr_init();
     xk_kbd_init();

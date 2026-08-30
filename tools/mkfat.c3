@@ -118,7 +118,7 @@ fn int xk_host_main(int argc, char** argv) @export("xk_host_main")
     char[1024] aicfg;
     uint alen = 0;
     char* cfg_model = (char*)"model=deepseek-v4-flash\n";
-    char* cfg_ep    = (char*)"endpoint=https://opencode.ai/zen/go/v1/chat/completions\n";
+    char* cfg_ep    = (char*)"endpoint=http://10.0.2.2:9080/chat/completions\n";
     char* cfg_tok   = (char*)"token=";
     for (uint i = 0; cfg_model[i] != 0 && alen < 1023; i++) aicfg[alen++] = cfg_model[i];
     for (uint i = 0; cfg_ep[i] != 0 && alen < 1023; i++) aicfg[alen++] = cfg_ep[i];
