@@ -76,14 +76,17 @@ fn void app_demo_update()
 }
 
 // ========================== TERMINAL ========================================
-const int TERM_CW = 36;      // columns
-const int TERM_RW = 14;      // rows
-const int TERM_W = TERM_CW * 8 + 8;
-const int TERM_H = TERM_RW * 8 + TITLE_H + 8;
-char[TERM_CW * TERM_RW] term_buf;
+// The terminal grid is sized at runtime from the screen resolution (see
+// wm_register_apps), so term_buf is statically sized to the largest grid and
+// term_cols/term_rows hold the current per-resolution columns/rows.
+const int TERM_COLS_MAX = 200;   // ~1600 px wide at 8 px/col
+const int TERM_ROWS_MAX = 120;
+char[TERM_COLS_MAX * TERM_ROWS_MAX] term_buf;
+int term_cols = 36;      // runtime grid size (columns/rows)
+int term_rows = 14;
 int term_row;
 int term_col;
-char[TERM_CW] term_cmd;   // current command line (shell)
+char[TERM_COLS_MAX] term_cmd;   // current command line (shell)
 int term_cmd_len;
 
 // render a string into the terminal grid AND mirror it to serial (headless).
@@ -124,7 +127,7 @@ fn void term_puthex(ulong v)
 
 fn void term_clear()
 {
-    for (int i = 0; i < TERM_CW * TERM_RW; i++)
+    for (int i = 0; i < term_cols * term_rows; i++)
     {
         term_buf[i] = 0;
     }
@@ -139,11 +142,11 @@ fn void app_term_draw(Window* w)
 {
     int ox = w.x + 4;
     int oy = w.y + TITLE_H + 4;
-    for (int r = 0; r < TERM_RW; r++)
+    for (int r = 0; r < term_rows; r++)
     {
-        for (int c = 0; c < TERM_CW; c++)
+        for (int c = 0; c < term_cols; c++)
         {
-            char ch = term_buf[r * TERM_CW + c];
+            char ch = term_buf[r * term_cols + c];
             char display = ch;
             if (ch == 0) display = ' ';
             fb_char(ox + c * 8, oy + r * 8, display, 0xE8E4D8, fb_rgb(10, 12, 14));
@@ -177,7 +180,7 @@ fn void app_term_key(Window* w, char c)
     }
     else if (c >= 0x20 && c <= 0x7E)
     {
-        if (term_cmd_len < TERM_CW - 1) term_cmd[term_cmd_len++] = c;
+        if (term_cmd_len < term_cols - 1) term_cmd[term_cmd_len++] = c;
         term_put(c);
     }
     // re-render the terminal into the shadow buffer, then blit the damaged region
@@ -191,7 +194,7 @@ fn void term_put(char c)
     {
         term_col = 0;
         term_row++;
-        if (term_row >= TERM_RW) term_scroll();
+        if (term_row >= term_rows) term_scroll();
         return;
     }
     if (c == 0x08)   // backspace
@@ -199,19 +202,19 @@ fn void term_put(char c)
         if (term_col > 0)
         {
             term_col--;
-            term_buf[term_row * TERM_CW + term_col] = 0;
+            term_buf[term_row * term_cols + term_col] = 0;
         }
         return;
     }
     if (c >= 0x20 && c <= 0x7E)
     {
-        term_buf[term_row * TERM_CW + term_col] = c;
+        term_buf[term_row * term_cols + term_col] = c;
         term_col++;
-        if (term_col >= TERM_CW)
+        if (term_col >= term_cols)
         {
             term_col = 0;
             term_row++;
-            if (term_row >= TERM_RW) term_scroll();
+            if (term_row >= term_rows) term_scroll();
         }
     }
 }
@@ -219,23 +222,39 @@ fn void term_put(char c)
 fn void term_scroll()
 {
     // shift rows up by one
-    for (int r = 1; r < TERM_RW; r++)
+    for (int r = 1; r < term_rows; r++)
     {
-        for (int c = 0; c < TERM_CW; c++)
+        for (int c = 0; c < term_cols; c++)
         {
-            term_buf[(r - 1) * TERM_CW + c] = term_buf[r * TERM_CW + c];
+            term_buf[(r - 1) * term_cols + c] = term_buf[r * term_cols + c];
         }
     }
-    for (int c = 0; c < TERM_CW; c++) term_buf[(TERM_RW - 1) * TERM_CW + c] = 0;
-    term_row = TERM_RW - 1;
+    for (int c = 0; c < term_cols; c++) term_buf[(term_rows - 1) * term_cols + c] = 0;
+    term_row = term_rows - 1;
 }
 
 // ========================= REGISTRATION =====================================
 fn void wm_register_apps()
 {
+    int margin  = WIN_MARGIN;
+    int gap     = WIN_GAP;
+    int reserve = 200;                 // width kept on the right for clock+demo
+    int chat_top = g_fb_h - DOCK_H - gap - CHAT_STRIP;
+
+    // ---- Terminal: top-left, grid sized from the runtime resolution ----
+    term_cols = (g_fb_w - margin * 2 - gap - reserve) / 8;
+    if (term_cols < 8) term_cols = 8;
+    if (term_cols > TERM_COLS_MAX) term_cols = TERM_COLS_MAX;
+    term_rows = (chat_top - margin - gap - TITLE_H - 8) / 8;
+    if (term_rows < 4) term_rows = 4;
+    if (term_rows > TERM_ROWS_MAX) term_rows = TERM_ROWS_MAX;
+
+    int term_w = term_cols * 8 + 8;
+    int term_h = term_rows * 8 + TITLE_H + 8;
+
     int t = wm_alloc();
-    xk_ws[t].x = 40; xk_ws[t].y = 40;
-    xk_ws[t].w = TERM_W; xk_ws[t].h = TERM_H;
+    xk_ws[t].x = margin; xk_ws[t].y = margin;
+    xk_ws[t].w = term_w; xk_ws[t].h = term_h;
     xk_ws[t].draw = &app_term_draw;
     xk_ws[t].key = &app_term_key;
     xmcopy(&title_term[0], &xk_ws[t].title[0]);
@@ -244,15 +263,17 @@ fn void wm_register_apps()
     term_cmd_len = 0;
     term_put('>');       // initial prompt
 
+    int col_x = margin + term_w + gap;
+
     int c = wm_alloc();
-    xk_ws[c].x = 560; xk_ws[c].y = 40;
+    xk_ws[c].x = col_x; xk_ws[c].y = margin;
     xk_ws[c].w = CLK_W; xk_ws[c].h = CLK_H;
     xk_ws[c].draw = &app_clock_draw;
     xk_ws[c].key = null;
     xmcopy(&title_clock[0], &xk_ws[c].title[0]);
 
     int d = wm_alloc();
-    xk_ws[d].x = 560; xk_ws[d].y = 110;
+    xk_ws[d].x = col_x; xk_ws[d].y = margin + CLK_H + gap;
     xk_ws[d].w = DEMO_W; xk_ws[d].h = DEMO_H;
     xk_ws[d].draw = &app_demo_draw;
     xk_ws[d].key = null;

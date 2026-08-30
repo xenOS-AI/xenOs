@@ -152,9 +152,12 @@ int g_last_sec_c = -1;
 // The tick counter MUST be read through xk_get_ticks() (an asm call), NOT
 // directly from g_ticks: a direct read lets the C3 compiler hoist g_ticks/100
 // out of the busy loop as a loop-invariant, so the per-second print never fires.
-fn void demo_task_a() { xk_sti(); for (;;) { int t = (int)(xk_get_ticks() / 100); if (t != g_last_sec_a) { g_last_sec_a = t; xk_puts("A"); } } }
-fn void demo_task_b() { xk_sti(); for (;;) { int t = (int)(xk_get_ticks() / 100); if (t != g_last_sec_b) { g_last_sec_b = t; xk_puts("B"); } } }
-fn void demo_task_c() { xk_sti(); for (;;) { int t = (int)(xk_get_ticks() / 100); if (t != g_last_sec_c) { g_last_sec_c = t; xk_puts("C"); } } }
+// The trailing xk_hlt() paces each task off the PIT instead of pinning a core:
+// without it these infinite loops hog the whole CPU and starve the desktop
+// loop (mouse cursor / compositor), which only advances its own idle loop.
+fn void demo_task_a() { xk_sti(); for (;;) { int t = (int)(xk_get_ticks() / 100); if (t != g_last_sec_a) { g_last_sec_a = t; xk_puts("A"); } xk_hlt(); } }
+fn void demo_task_b() { xk_sti(); for (;;) { int t = (int)(xk_get_ticks() / 100); if (t != g_last_sec_b) { g_last_sec_b = t; xk_puts("B"); } xk_hlt(); } }
+fn void demo_task_c() { xk_sti(); for (;;) { int t = (int)(xk_get_ticks() / 100); if (t != g_last_sec_c) { g_last_sec_c = t; xk_puts("C"); } xk_hlt(); } }
 
 fn void thread_spawn_demos()
 {

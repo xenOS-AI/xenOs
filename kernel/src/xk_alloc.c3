@@ -35,7 +35,7 @@ fn void frame_init()
     for (uint i = 0; i < BM_BYTES; i++) { frame_bitmap[i] = (char)0; }
     g_total_frames = (uint)((MEM_END - MEM_START) / FRAME_SZ);
     frame_mark_range(MEM_START, xk_get_bss_end());                       // kernel image
-    frame_mark_range(SHADOW, SHADOW + (ulong)FB_W * (ulong)FB_H * 4);    // shadow buffer
+    frame_mark_range(SHADOW, SHADOW + (ulong)FB_W_MAX * (ulong)FB_H_MAX * 4); // shadow buffer
     frame_mark_range(STACKS_BASE, STACKS_BASE + (ulong)MAX_TASKS * TASK_STACK_SZ); // threads
     frame_mark_range(HEAP_BASE, HEAP_BASE + HEAP_TOTAL);                 // kernel heap
     g_used_frames = 0;

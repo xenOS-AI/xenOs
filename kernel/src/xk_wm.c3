@@ -6,10 +6,12 @@ module xk;
 // Windows are tiny callbacks; apps render into the shadow and mark damage.
 // ============================================================================
 
-const int WMW = FB_W;
-const int WMH = FB_H;
+int wmw;   // screen canvas size (set at runtime via fb_setmode)
+int wmh;
 const int TITLE_H = 20;
 const int DOCK_H = 30;
+const int WIN_MARGIN = 24;   // screen-edge margin for the auto-tiled desktop
+const int WIN_GAP    = 16;   // spacing between tiled windows
 const int WIN_MAX = 8;
 
 alias AppDraw = fn void(Window* w);
@@ -77,14 +79,14 @@ fn void wm_draw_window(int i)
 fn void wm_composite()
 {
     // repaint background + dock beneath the windows (avoids ghosting)
-    fb_fill_rect(0, 0, WMW, WMH, fb_rgb(16, 32, 48));
-    fb_fill_rect(0, WMH - DOCK_H, WMW, DOCK_H, fb_rgb(30, 34, 42));
+    fb_fill_rect(0, 0, wmw, wmh, fb_rgb(16, 32, 48));
+    fb_fill_rect(0, wmh - DOCK_H, wmw, DOCK_H, fb_rgb(30, 34, 42));
     for (int i = 0; i < WIN_MAX; i++)
     {
         if (xk_ws[i].open) wm_draw_window(i);
     }
     // dock back on top
-    fb_fill_rect(0, WMH - DOCK_H, WMW, DOCK_H, fb_rgb(30, 34, 42));
+    fb_fill_rect(0, wmh - DOCK_H, wmw, DOCK_H, fb_rgb(30, 34, 42));
 }
 
 // blit one window's rect to VRAM
@@ -105,9 +107,9 @@ fn void wm_desktop()
 {
     fb_clear(fb_rgb(16, 32, 48));
     // dock
-    fb_fill_rect(0, WMH - DOCK_H, WMW, DOCK_H, fb_rgb(30, 34, 42));
-    fb_blit_rect(0, 0, WMW, WMH - DOCK_H);
-    fb_blit_rect(0, WMH - DOCK_H, WMW, DOCK_H);
+    fb_fill_rect(0, wmh - DOCK_H, wmw, DOCK_H, fb_rgb(30, 34, 42));
+    fb_blit_rect(0, 0, wmw, wmh - DOCK_H);
+    fb_blit_rect(0, wmh - DOCK_H, wmw, DOCK_H);
 }
 
 // ---- hit testing ----
@@ -137,7 +139,7 @@ fn bool wm_in_close(Window* w, int x, int y)
 
 fn bool wm_in_dock(int y)
 {
-    return y >= WMH - DOCK_H;
+    return y >= wmh - DOCK_H;
 }
 
 // ---- bring window to front by reordering ----
@@ -212,8 +214,8 @@ fn void wm_tick()
         w.y = mouse_y - drag_dy;
         if (w.x < 0) w.x = 0;
         if (w.y < 0) w.y = 0;
-        if (w.x + w.w > WMW) w.x = WMW - w.w;
-        if (w.y + w.h > WMH - DOCK_H) w.y = WMH - DOCK_H - w.h;
+        if (w.x + w.w > wmw) w.x = wmw - w.w;
+        if (w.y + w.h > wmh - DOCK_H) w.y = wmh - DOCK_H - w.h;
         wm_composite();
         wm_present_all();
     }

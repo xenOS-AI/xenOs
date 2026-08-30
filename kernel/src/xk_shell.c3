@@ -106,9 +106,9 @@ fn void shell_ps()
 fn void shell_run(char* line)
 {
     char[24] cmd;
-    char[TERM_CW] arg;
+    char[TERM_COLS_MAX] arg;
     next_tok(line, &cmd[0], 24);
-    skip_cmd(line, &arg[0], TERM_CW);
+    skip_cmd(line, &arg[0], TERM_COLS_MAX);
 
     if (cmd[0] == 0) { return; }
     else if (streq(&cmd[0], "help"))   { shell_help(); }

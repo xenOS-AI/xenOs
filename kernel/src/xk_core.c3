@@ -94,6 +94,8 @@ fn void xk_boot()
     xk_puts("\r\n=== xenOS kernel 0.1 - hand-written in C3 ===\r\n");
 
     BootInfo* bi = get_bootinfo();
+    // adopt the screen geometry the bootloader negotiated (runtime resolution)
+    fb_setmode((int)bi.width, (int)bi.height, (int)bi.pitch);
     xk_puts("[boot] framebuffer addr = ");
     xk_puthex(bi.fb_addr);
     xk_puts("\r\n");
@@ -182,13 +184,11 @@ fn void xk_idle_loop()
         net_poll();
 
         // periodic app updates
-        if ((g_ticks % 100) == 0) app_clock_update();
-        if ((g_ticks % 12) == 0) app_demo_update();
-        if ((g_ticks % 2) == 0)
-        {
-            fb_cursor(mouse_x, mouse_y);
-            fb_blit_rect(mouse_x - 8, mouse_y - 8, 20, 20);
-        }
+        if (((int)xk_get_ticks() % 100) == 0) app_clock_update();
+        if (((int)xk_get_ticks() % 12) == 0) app_demo_update();
+        // Paint the mouse cursor as a VRAM overlay (erases before redraw so it
+        // never leaves trails). Driven by accumulated mouse deltas in the ISR.
+        fb_cursor(mouse_x, mouse_y);
     }
 }
 

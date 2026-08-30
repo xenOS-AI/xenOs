@@ -9,7 +9,8 @@ module xk;
 
 const int CHAT_W = 620;
 const int CHAT_H = 300;
-const int CHAT_LINES = 26;        // scrollback capacity
+const int CHAT_STRIP = 150;        // height of the bottom chat window (auto-tiled)
+const int CHAT_LINES = 26;         // scrollback capacity
 const int CHAT_LINELEN = 120;
 const int CHAT_INPUTLEN = 96;
 
@@ -155,8 +156,13 @@ fn void chat_open_window()
 {
     int c = wm_alloc();
     if (c < 0) return;
-    xk_ws[c].x = 40; xk_ws[c].y = 200;
-    xk_ws[c].w = CHAT_W; xk_ws[c].h = CHAT_H;
+    int margin = WIN_MARGIN;
+    int gap    = WIN_GAP;
+    // full-width strip sitting on the dock, above the terminal area
+    xk_ws[c].x = margin;
+    xk_ws[c].y = g_fb_h - DOCK_H - gap - CHAT_STRIP;
+    xk_ws[c].w = g_fb_w - margin * 2;
+    xk_ws[c].h = CHAT_STRIP;
     xk_ws[c].draw = &app_chat_draw;
     xk_ws[c].key = &app_chat_key;
     xmcopy(&title_chat[0], &xk_ws[c].title[0]);
