@@ -415,6 +415,33 @@ fn long lx_accept(ulong* a)
     return (long)e;
 }
 
+// getsockopt(fd, level, optname, optval, optlen) -- nr 54 (libwayland: SO_ERROR after connect)
+fn long lx_getsockopt(ulong* a)
+{
+    long fd = (long)a[0];
+    if (!sock_fd(fd)) return (long)(-EBADF);
+    uint level = (uint)a[1];
+    uint optname = (uint)a[2];
+    ulong optval = a[3];
+    ulong optlen = a[4];
+    if (optval == 0) return 0;
+    char* o = (char*)optval;
+    if (level == 1u && optname == 4u)   // SOL_SOCKET/SO_ERROR -> connection fine
+    {
+        o[0] = 0; o[1] = 0; o[2] = 0; o[3] = 0;
+        if (optlen != 0) { char* l = (char*)optlen; l[0] = 4; l[1] = 0; l[2] = 0; l[3] = 0; }
+    }
+    else if (level == 1u && optname == 3u)   // SO_TYPE -> SOCK_STREAM (1)
+    {
+        o[0] = 1; o[1] = 0; o[2] = 0; o[3] = 0;
+    }
+    else if (level == 1u && optname == 2u)   // SO_REUSEADDR -> 0
+    {
+        o[0] = 0; o[1] = 0; o[2] = 0; o[3] = 0;
+    }
+    return 0;
+}
+
 // ---- poll/ppoll (nr 7/271): event readability of the socket layer ----
 const ushort POLLIN  = 0x001;
 const ushort POLLOUT = 0x004;
@@ -1497,7 +1524,8 @@ fn ulong xk_linux_dispatch(ulong nr, ulong* a) @export("xk_linux_dispatch")
     else if (nr == 232) { return (ulong)lx_epoll_wait(a); }                    // epoll_wait
     else if (nr == 281) { return (ulong)lx_epoll_wait(a); }                      // epoll_pwait
     else if (nr == 56 || nr == 58) { return (ulong)(-ENOSYS); }  // clone/vfork (threads: later)
-    else if (nr == 45 || nr == 44 || nr == 46 || nr == 54) { return (ulong)(-ENOSYS); } // sockets (sendmsg/recvmsg/etc)
+    else if (nr == 45 || nr == 44 || nr == 46) { return (ulong)(-ENOSYS); } // sendmsg/recvmsg/etc
+    else if (nr == 54)      { return (ulong)lx_getsockopt(a); }            // getsockopt (libwayland SO_ERROR after nonblock connect)
     // Unknown syscall: print which one, then ENOSYS (keeps musl's failure visible).
     xk_puts("[linux] unimplemented syscall nr=");
     xk_putdec((int)nr);
