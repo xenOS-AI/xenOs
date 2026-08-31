@@ -21,9 +21,10 @@ const uint WLSURF_ATTACH = 1;     // wl_surface.attach
 const uint WLSURF_COMMIT = 6;     // wl_surface.commit
 const uint WLSEAT_KB = 1;         // wl_seat.get_keyboard (new_id)
 const uint WLSEAT_PTR = 2;        // wl_seat.get_pointer (new_id)
+struct WlSur { bool used; uint surf_id; uint buf_base, bw, bh, bstride; bool attached; }
 struct WlConn { bool used; uint srvfd; uint clifd; uint robj; uint cbid;
                 uint shm_id, comp_id, surf_id, pool_id, seat_id, kb_id, ptr_id;
-                uint buf_base, bw, bh, bstride; bool attached; }
+                uint curw; WlSur[4] surfs; }
 WlConn[4] g_wl;
 uint g_wl_serial = 1;
 
@@ -110,7 +111,7 @@ fn int wl_find(uint srvfd)
 }
 fn void wl_register(uint srvfd, uint clifd)
 {
-    for (int i = 0; i < 4; i++) { if (!g_wl[i].used) { g_wl[i].used = true; g_wl[i].srvfd = srvfd; g_wl[i].clifd = clifd; g_wl[i].robj = 0; g_wl[i].cbid = 0; g_wl[i].shm_id = 0; g_wl[i].comp_id = 0; g_wl[i].seat_id = 0; g_wl[i].kb_id = 0; g_wl[i].ptr_id = 0; return; } }
+    for (int i = 0; i < 4; i++) { if (!g_wl[i].used) { g_wl[i].used = true; g_wl[i].srvfd = srvfd; g_wl[i].clifd = clifd; g_wl[i].robj = 0; g_wl[i].cbid = 0; g_wl[i].shm_id = 0; g_wl[i].comp_id = 0; g_wl[i].seat_id = 0; g_wl[i].kb_id = 0; g_wl[i].ptr_id = 0; g_wl[i].curw = 0; for (int k = 0; k < 4; k++) { g_wl[i].surfs[k].used = false; } return; } }
 }
 
 // Read a Wayland wire string arg at ring offset `o` (u32 len + bytes + NUL pad);
@@ -122,27 +123,36 @@ fn uint wl_str_len(SockState* s, ulong o)
 }
 
 // Present the attached buffer to the primary framebuffer (Phase D).
-fn void wl_present(int wix)
+fn int wl_find_surf(WlConn* c, uint id)
 {
-    uint w = g_wl[wix].bw;
-    uint h = g_wl[wix].bh;
-    uint stride = g_wl[wix].bstride;
-    ulong base = g_wl[wix].buf_base;
+    for (int i = 0; i < 4; i++) { if (c.surfs[i].used && c.surfs[i].surf_id == id) return i; }
+    return -1;
+}
+// Present surface `si` tiled across the framebuffer (a basic window manager).
+fn void wl_present(int wix, int si)
+{
+    WlSur* q = &g_wl[wix].surfs[si];
+    uint w = q.bw;
+    uint h = q.bh;
+    uint stride = q.bstride;
+    ulong base = q.buf_base;
     if (w == 0 || h == 0 || base == 0) return;
     uint fbw = (uint)g_fb_w;
     uint fbh = (uint)g_fb_h;
-    uint cx = w < fbw ? w : fbw;
-    uint cy = h < fbh ? h : fbh;
+    uint x0 = (uint)(si % 2) * 336u;
+    uint y0 = (uint)(si / 2) * 256u;
+    uint cx = w < (fbw - x0) ? w : (fbw - x0);
+    uint cy = h < (fbh - y0) ? h : (fbh - y0);
     char* fb = (char*)(ulong)0xFD000000ul;
     for (uint yy = 0; yy < cy; yy++)
     {
         char* src = (char*)base + (ulong)yy * (ulong)stride;
-        char* dst = fb + (ulong)yy * (ulong)fbw * 4ul;
+        char* dst = fb + ((ulong)(yy + y0) * (ulong)fbw + (ulong)x0) * 4ul;
         for (uint xx = 0; xx < cx * 4u; xx++) dst[xx] = src[xx];
     }
-    xk_puts("[wl] PRESENTED "); xk_putdec((int)w); xk_puts("x"); xk_putdec((int)h);
-    xk_puts(" stride="); xk_putdec((int)stride); xk_puts(" @"); xk_puthex(base);
-    xk_puts(" -> framebuffer\n");
+    xk_puts("[wl] PRESENTED win"); xk_putdec(si); xk_puts(" "); xk_putdec((int)w); xk_puts("x"); xk_putdec((int)h);
+    xk_puts(" @"); xk_puthex(base); xk_puts(" at "); xk_putdec((int)x0); xk_puts(","); xk_putdec((int)y0);
+    xk_puts("\n");
 }
 
 // Map a PS/2-derived ASCII char (kbd queue) to a Linux evdev keycode for the wire.
@@ -188,7 +198,8 @@ fn void wl_serve(int wix)
         }
         else if (obj == c.comp_id && op == WLC_SURFACE && ms >= 12)
         {
-            c.surf_id = wl_rd32(s, 8);
+            uint sid = wl_rd32(s, 8);
+            for (int i = 0; i < 4; i++) { if (!c.surfs[i].used) { c.surfs[i].used = true; c.surfs[i].surf_id = sid; c.surfs[i].bw = 0; c.surfs[i].attached = false; c.curw = (uint)i; break; } }
         }
         else if (obj == c.seat_id && op == WLSEAT_KB && ms >= 12)
         {
@@ -209,27 +220,28 @@ fn void wl_serve(int wix)
             if ((mouse_buttons & 1u) != 0) wl_emit_ptr_button(clifd, c.ptr_id, 0x110u);
         }
         else if (obj == c.shm_id && op == WLS_POOL && ms >= 20)
-        {
-            c.pool_id = wl_rd32(s, 8);
-            c.buf_base = wl_rd32(s, 12);      // "fd" transport: the SHM pixel base (single-proc)
-            c.bw = 0; c.bh = 0;
-        }
-        else if (obj == c.pool_id && op == WLP_BUFFER && ms >= 32)
-        {
-            c.bw = wl_rd32(s, 16);
-            c.bh = wl_rd32(s, 20);
-            c.bstride = wl_rd32(s, 24);
-            c.buf_base += wl_rd32(s, 12);     // offset
-        }
-        else if (obj == c.surf_id && op == WLSURF_ATTACH && ms >= 20)
-        {
-            c.attached = true;
-        }
-        else if (obj == c.surf_id && op == WLSURF_COMMIT && ms >= 8)
-        {
-            if (c.attached) wl_present(wix);
-            c.attached = false;
-        }
+                {
+                    c.pool_id = wl_rd32(s, 8);
+                    c.surfs[c.curw].buf_base = wl_rd32(s, 12);   // "fd" transport: SHM pixel base (single-proc)
+                }
+                else if (obj == c.pool_id && op == WLP_BUFFER && ms >= 32)
+                {
+                    c.surfs[c.curw].bw = wl_rd32(s, 16);
+                    c.surfs[c.curw].bh = wl_rd32(s, 20);
+                    c.surfs[c.curw].bstride = wl_rd32(s, 24);
+                    c.surfs[c.curw].buf_base += wl_rd32(s, 12);   // offset
+                }
+                else if (op == WLSURF_ATTACH && ms >= 20)
+                {
+                    int si = wl_find_surf(c, obj);
+                    if (si >= 0) c.surfs[si].attached = true;
+                }
+                else if (op == WLSURF_COMMIT && ms >= 8)
+                {
+                    int si = wl_find_surf(c, obj);
+                    if (si >= 0 && c.surfs[si].attached) wl_present(wix, si);
+                    if (si >= 0) c.surfs[si].attached = false;
+                }
         wl_pop(s, ms);
     }
 }
