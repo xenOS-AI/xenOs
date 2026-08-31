@@ -22,6 +22,7 @@ extern fn void   xk_wrmsr(uint msr, ulong value);
 const ulong LX_USER_START = 0x00400000;   // static non-PIE code/data base (4 MiB)
 const ulong LX_HEAP_END   = 0x00A00000;   // user brk cap (10 MiB)
 const ulong LX_STACK_TOP  = 0x0FF00000;   // user stack top (255 MiB; RAM is 0..256 MiB)
+const ulong LX_INTERP_BASE= 0x0A000000;   // ld-musl interpreter load base (160 MiB)
 const ulong LX_MMAP_BASE  = 0x0C000000;   // anonymous mmap arena start (192 MiB)
 const ulong LX_MMAP_END   = 0x0FC00000;   // arena end (252 MiB)
 
@@ -288,123 +289,201 @@ fn ulong xk_linux_dispatch(ulong nr, ulong* a) @export("xk_linux_dispatch")
     return (ulong)(-ENOSYS);
 }
 
-// ---- ELF64 static loader ----
-fn bool linux_load_blob(char* bin, uint len, ulong* entry_out, ulong* stack_out)
+// ---- mark every 2 MiB page a PT_LOAD segment spans as user-accessible ----
+fn void mark_seg_users(ulong va, ulong memsz)
 {
-    if (len < 64) { xk_puts("[linux] blob too small\\r\\n"); return false; }
+    ulong p0 = va & ~(ulong)0x1FFFFF;
+    ulong p1 = (va + memsz) & ~(ulong)0x1FFFFF;
+    for (ulong pg = p0; pg <= p1; pg += (ulong)0x200000) { mark_user_pde(g_linux_pml4, pg); }
+}
+
+// Map an ELF64 binary into the (already created) process address space.
+// `base` is the load base: base==0 for ET_EXEC (absolute vaddrs), a chosen
+// base for ET_DYN (segments placed at base+vaddr). Copies file bytes, zeroes
+// BSS, marks spanned pages U/S. Returns absolute entry/phdr and phnum.
+fn bool linux_map_elf(char* bin, uint len, ulong base, ulong* entry_out, ulong* phdr_out, uint* phnum_out)
+{
+    if (len < 64) { xk_puts("[linux] blob too small\r\n"); return false; }
     if ((char)bin[0] != (char)0x7F || (char)bin[1] != 'E' || (char)bin[2] != 'L' || (char)bin[3] != 'F')
-    { xk_puts("[linux] bad ELF magic\\r\\n"); return false; }
+    { xk_puts("[linux] bad ELF magic\r\n"); return false; }
     if ((char)bin[4] != (char)2 || (char)bin[5] != (char)1)
-    { xk_puts("[linux] not ELF64 LE\\r\\n"); return false; }
+    { xk_puts("[linux] not ELF64 LE\r\n"); return false; }
     uint etype = rd_u16(bin, ELF_E_TYPE);
     uint emach = rd_u16(bin, ELF_E_MACH);
-    if (etype != 2 && etype != 3) { xk_puts("[linux] not an executable ELF\\r\\n"); return false; }
-    if (emach != EM_X86_64) { xk_puts("[linux] not x86-64\\r\\n"); return false; }
-    ulong entry = rd_u64(bin, ELF_E_ENTRY);
+    if (etype != 2 && etype != 3) { xk_puts("[linux] not an ELF object\r\n"); return false; }
+    if (emach != EM_X86_64) { xk_puts("[linux] not x86-64\r\n"); return false; }
+    ulong entry_off = rd_u64(bin, ELF_E_ENTRY);
     ulong phoff = rd_u64(bin, ELF_E_PHOFF);
     uint phent = rd_u16(bin, ELF_E_PHENTSZ);
     uint phnum = rd_u16(bin, ELF_E_PHNUM);
-    if (phent != PH_SIZE) { xk_puts("[linux] unexpected phdr size\\r\\n"); return false; }
-
-    g_linux_pml4 = create_process_addrspace(LX_USER_START);
-    if (g_linux_pml4 == 0) { xk_puts("[linux] no frames for address space\\r\\n"); return false; }
-
-    // mark the whole user code+heap region and the stack region U/S
-    for (ulong v = LX_USER_START; v < LX_HEAP_END; v += (ulong)0x200000) { mark_user_pde(g_linux_pml4, v); }
-    for (ulong v = (ulong)0x0FC00000; v < LX_STACK_TOP; v += (ulong)0x200000) { mark_user_pde(g_linux_pml4, v); }
-
-    // map each PT_LOAD: copy file bytes, zero the BSS tail
-    ulong brk_end = 0;
+    if (phent != PH_SIZE) { xk_puts("[linux] unexpected phdr size\r\n"); return false; }
+    ulong elf_base = base;    // loaded address of file offset 0 (the ELF header)
     for (uint i = 0; i < phnum; i++)
     {
         ulong ph = phoff + (ulong)i * PH_SIZE;
-                if (rd_u32(bin, (uint)ph) != PT_LOAD) continue;
-                ulong poff  = rd_u64(bin, (uint)(ph + 8));    // p_offset: file offset of the content
-                ulong vaddr = rd_u64(bin, (uint)(ph + PH_OFF_VADDR));
-                ulong filesz = rd_u64(bin, (uint)(ph + PH_OFF_FILESZ));
-                ulong memsz  = rd_u64(bin, (uint)(ph + PH_OFF_MEMSZ));
-                xk_puts("[linux]  load ");
-                xk_puthex(vaddr);
-                xk_puts(" +");
-                xk_putdec((int)memsz);
-                xk_puts("\r\n");
-                for (ulong k = 0; k < filesz; k++) { ((char*)vaddr)[k] = bin[poff + k]; }
-        if (memsz > filesz) { kmemzero((void*)(ulong)(vaddr + filesz), memsz - filesz); }
-        if (vaddr + memsz > brk_end) brk_end = vaddr + memsz;
+        if (rd_u32(bin, (uint)ph) != PT_LOAD) continue;
+        ulong poff  = rd_u64(bin, (uint)(ph + 8));
+        ulong vaddr = rd_u64(bin, (uint)(ph + PH_OFF_VADDR));
+        ulong filesz = rd_u64(bin, (uint)(ph + PH_OFF_FILESZ));
+        ulong memsz  = rd_u64(bin, (uint)(ph + PH_OFF_MEMSZ));
+        ulong va = base + vaddr;
+        if (poff == 0) { elf_base = va; }      // the segment that holds the ELF header
+        mark_seg_users(va, memsz);
+        xk_puts("[linux]  load ");
+        xk_puthex(va);
+        xk_puts(" +");
+        xk_putdec((int)memsz);
+        xk_puts("\r\n");
+        for (ulong k = 0; k < filesz; k++) { ((char*)va)[k] = bin[poff + k]; }
+        if (memsz > filesz) { kmemzero((void*)(ulong)(va + filesz), memsz - filesz); }
     }
-    g_user_brk = (brk_end + 4095) & ~((ulong)4095);
-
-    // build the initial user stack: argc/argv/envp/auxv (Linux SysV layout)
-    ulong sp = LX_STACK_TOP;
-    // strings live just below the pointer array (grow down)
-    const char* PROG = "/UHELLO.EXE";
-    int plen = 0;
-    while (PROG[plen] != 0) plen++;
-    sp -= (ulong)plen + 1;
-    for (int i = 0; i < plen; i++) { ((char*)sp)[i] = PROG[i]; }
-    ((char*)sp)[plen] = 0;
-    ulong path_str = sp;
-    // 16 random bytes for AT_RANDOM (stack canary)
-    sp -= 16;
-    for (int i = 0; i < 16; i++) { ((char*)sp)[i] = (char)((int)sp + i); }
-    ulong random_ptr = sp;
-    // auxv: write pairs downward from current sp, pre-computing into an array
-    // (we push downward so each aux pair is written 16 bytes below the next)
-    ulong[32] aux;
-    int an = 0;
-    aux[an++] = 3;   aux[an++] = LX_USER_START + phoff;   // AT_PHDR
-    aux[an++] = 4;   aux[an++] = 56;                      // AT_PHENT
-    aux[an++] = 5;   aux[an++] = (ulong)phnum;            // AT_PHNUM
-    aux[an++] = 6;   aux[an++] = 4096;                    // AT_PAGESZ
-    aux[an++] = 7;   aux[an++] = 0;                       // AT_BASE (static)
-    aux[an++] = 9;   aux[an++] = entry;                   // AT_ENTRY
-    aux[an++] = 25;  aux[an++] = random_ptr;              // AT_RANDOM
-    aux[an++] = 11;  aux[an++] = g_linux_pid;             // AT_UID
-    aux[an++] = 12;  aux[an++] = g_linux_pid;             // AT_EUID
-    aux[an++] = 13;  aux[an++] = g_linux_pid;             // AT_GID
-    aux[an++] = 14;  aux[an++] = g_linux_pid;             // AT_EGID
-    aux[an++] = 0;   aux[an++] = 0;                       // terminator
-    sp -= (ulong)an * 8;
-    for (int i = 0; i < an; i++) { st8(sp + (ulong)i * 8, aux[i]); }
-    // Align the ARRAY base down now so the argv/argc chain below lands with
-    // argc on a 16-byte boundary == the final rsp. (32 bytes = 2*16, keeps rsp aligned.)
-    sp = sp & ~((ulong)15);
-    // envp (empty): one NULL
-    sp -= 8; st8(sp, 0);
-    // argv: [path, NULL]
-    sp -= 8; st8(sp, 0);            // argv[1] = NULL
-    sp -= 8; st8(sp, path_str);     // argv[0]
-    // argc (this is the CPU entry rsp)
-    sp -= 8; st8(sp, 1);
-
-    linux_fd_init();
-    *entry_out = entry;
-    *stack_out = sp;
+    *entry_out = base + entry_off;
+    *phdr_out = elf_base + phoff;    // where the program-header table really lives in memory
+    *phnum_out = phnum;
     return true;
 }
 
-// ---- boot entry: load + launch the embedded musl ELF, or fall back ----
+// Build the Linux SysV initial stack (argc/argv/envp/auxv) for a process whose
+// binary program-header table is at `phdr`, entry at `entry`, load base at
+// `base` (0 = static, else the interpreter's base -> AT_BASE). The block is
+// laid out CONTIGUOUSLY upward from a 16-byte-aligned rsp (no gaps), so the
+// interpreter/auxv scanning sees exactly argc..argv..envp..auxv.
+fn bool linux_build_stack(ulong phdr, ulong entry, ulong base, uint phnum, ulong* sp_out)
+{
+    ulong[40] aux;
+    int an = 0;
+    aux[an++] = 3;   aux[an++] = phdr;           // AT_PHDR
+    aux[an++] = 4;   aux[an++] = 56;             // AT_PHENT
+    aux[an++] = 5;   aux[an++] = (ulong)phnum;   // AT_PHNUM
+    aux[an++] = 6;   aux[an++] = 4096;           // AT_PAGESZ
+    aux[an++] = 7;   aux[an++] = base;           // AT_BASE (interp base, 0=static)
+    aux[an++] = 9;   aux[an++] = entry;          // AT_ENTRY (main's entry)
+    aux[an++] = 25;  aux[an++] = 0;              // AT_RANDOM filled below
+    aux[an++] = 11;  aux[an++] = g_linux_pid;    // AT_UID
+    aux[an++] = 12;  aux[an++] = g_linux_pid;    // AT_EUID
+    aux[an++] = 13;  aux[an++] = g_linux_pid;    // AT_GID
+    aux[an++] = 14;  aux[an++] = g_linux_pid;    // AT_EGID
+    aux[an++] = 0;   aux[an++] = 0;              // terminator
+
+    const char* PROG = "/UHELLO.EXE";
+    int plen = 0;
+    while (PROG[plen] != 0) plen++;
+    ulong extra = (ulong)an * 8 + 32;            // auxv + argc+argv0+argv1+envp0
+    ulong strsz = (ulong)plen + 1 + 16;          // path string + AT_RANDOM bytes
+    ulong rsp = (LX_STACK_TOP - (extra + strsz)) & ~((ulong)15);
+
+    ulong random_ptr = rsp + extra;              // AT_RANDOM occupies the 16 bytes
+    ulong path_str   = random_ptr + 16;          // then the path string at the top
+
+    // find aux slot for '25' (AT_RANDOM) and write the real pointer
+    for (int j = 0; j + 1 < an; j += 2) { if (aux[j] == 25) aux[j + 1] = random_ptr; }
+
+    st8(rsp, 1);                 // argc
+    st8(rsp + 8, path_str);      // argv[0]
+    st8(rsp + 16, 0);            // argv[1] = NULL
+    st8(rsp + 24, 0);            // envp[0] = NULL
+    for (int i = 0; i < an; i++) { st8(rsp + 32 + (ulong)i * 8, aux[i]); }   // auxv
+    for (int i = 0; i < 16; i++) { ((char*)random_ptr)[i] = (char)((int)random_ptr + i); }
+    for (int i = 0; i < plen; i++) { ((char*)path_str)[i] = PROG[i]; }
+    ((char*)path_str)[plen] = 0;
+
+    *sp_out = rsp;
+    return true;
+}
+
+fn void linux_launch(ulong entry, ulong stack)
+{
+    xk_puts("[linux] launching musl ELF (entry=");
+    xk_puthex(entry);
+    xk_puts(" sp=");
+    xk_puthex(stack);
+    xk_puts(")\r\n");
+    linux_fd_init();
+    xk_mask_hw_irqs(1);      // keep device IRQs off while the ring-3 process runs
+    xk_set_cr3(g_linux_pml4);
+    xk_enter_ring3(entry, stack);
+}
+
+// Dynamically-linked launcher: map the dynamic main + the ld-musl interpreter
+// (its libc, which IS the dynamic linker) loaded from the FAT volume, build
+// the auxv (AT_BASE=interpreter base, AT_PHDR/AT_ENTRY=main) and enter the
+// interpreter. musl's _dlstart does all relocations/symbol resolution.
+fn bool linux_exec_dynamic()
+{
+    // dynamic main (embedded dyn_blob, ET_EXEC at 0x400000)
+    ulong m_entry = 0;
+    ulong m_phdr = 0;
+    uint m_phnum = 0;
+    if (!linux_map_elf(&dyn_blob[0], DYN_BLOB_LEN, 0, &m_entry, &m_phdr, &m_phnum))
+    {
+        xk_puts("[linux] dynamic: no main\r\n");
+        return false;
+    }
+    // read the interpreter (musl's ldso == libc.so) from the FAT data volume
+    uint cap = 900000;
+    char* ibuf = (char*)kmalloc(cap);
+    if (ibuf == null) { xk_puts("[linux] dynamic: no heap for interp\r\n"); return false; }
+    uint ilen = 0;
+    int r = fat_read_file("LIBC.SO", ibuf, cap, &ilen);
+    if (r != 0) { xk_puts("[linux] dynamic: interpreter not on disk\r\n"); kfree(ibuf); return false; }
+    ulong i_entry = 0;
+    ulong i_phdr = 0;
+    uint i_phnum = 0;
+    bool ok = linux_map_elf(ibuf, ilen, LX_INTERP_BASE, &i_entry, &i_phdr, &i_phnum);
+    kfree(ibuf);
+    if (!ok) { xk_puts("[linux] dynamic: interp map failed\r\n"); return false; }
+    ulong stack = 0;
+    if (!linux_build_stack(m_phdr, m_entry, LX_INTERP_BASE, m_phnum, &stack))
+    {
+        xk_puts("[linux] dynamic: no stack\r\n");
+        return false;
+    }
+    xk_puts("[linux] dynamic: main@");
+    xk_puthex(m_entry);
+    xk_puts(" interp@");
+    xk_puthex(i_entry);
+    xk_puts(" (base ");
+    xk_puthex(LX_INTERP_BASE);
+    xk_puts(")\r\n");
+    linux_launch(i_entry, stack);
+    return true;
+}
+
+// ---- boot entry: load + launch the embedded / on-disk musl ELF ----
 fn void linux_boot_exec()
 {
-    linux_blob_init();     // fills the BSS blob from generated byte code
+    linux_blob_init();     // fills the BSS static blob from generated byte code
+    dyn_blob_init();       // fills the BSS dynamic-main blob
     xk_puts("[linux] enabling SYSCALL MSRs\r\n");
     xk_linux_syscall_init();
+
+    g_linux_pml4 = create_process_addrspace(LX_USER_START);
+    if (g_linux_pml4 == 0) { xk_puts("[linux] no frames for address space\r\n"); umode_enter(); return; }
+    // mark user code+heap region and the stack region U/S
+    for (ulong v = LX_USER_START; v < LX_HEAP_END; v += (ulong)0x200000) { mark_user_pde(g_linux_pml4, v); }
+    for (ulong v = (ulong)0x0FC00000; v < LX_STACK_TOP; v += (ulong)0x200000) { mark_user_pde(g_linux_pml4, v); }
+
+    // Prefer the dynamically-linked binary (loader + ld-musl interp); fall back
+    // to the static one if the interpreter cannot be sourced.
+    if (linux_exec_dynamic())
+    {
+        return;
+    }
+    // static fallback (the committed static musl blob)
     ulong entry = 0;
+    ulong phdr = 0;
     ulong stack = 0;
-    if (linux_load_blob(&linux_blob[0], LINUX_BLOB_LEN, &entry, &stack))
+    uint phnum = 0;
+    uint m_phnum = 0;
+    ulong m_phdr = LX_USER_START;
+    if (linux_map_elf(&linux_blob[0], LINUX_BLOB_LEN, 0, &entry, &m_phdr, &m_phnum))
     {
-        xk_puts("[linux] launching musl ELF (entry=");
-        xk_puthex(entry);
-        xk_puts(" sp=");
-        xk_puthex(stack);
-        xk_puts(")\r\n");
-        xk_mask_hw_irqs(1);      // keep device IRQs off while the ring-3 process runs
-        xk_set_cr3(g_linux_pml4);
-        xk_enter_ring3(entry, stack);
+        if (linux_build_stack(m_phdr, entry, 0, m_phnum, &stack))
+        {
+            linux_launch(entry, stack);
+            return;
+        }
     }
-    else
-    {
-        xk_puts("[linux] load failed; falling back to the native ring-3 demo\\r\\n");
-        umode_enter();
-    }
+    xk_puts("[linux] load failed; falling back to the native ring-3 demo\r\n");
+    umode_enter();
 }

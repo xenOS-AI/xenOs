@@ -8,6 +8,7 @@ module mkfat;
 // exactly like mkdisk.c3.
 // ============================================================================
 
+const int O_RDONLY = 0;
 const int O_WRONLY = 1;
 const int O_CREAT  = 64;
 const int O_TRUNC  = 512;
@@ -15,6 +16,7 @@ const long SEEK_END = 2;
 const long SEEK_SET = 0;
 const long SECTOR    = 512;
 const long MODE_0666 = 438;   // 0o666
+const long INTERP_CAP = 1048576;   // 1 MiB staging for the dynamic linker (libc.so)
 
 const long TOTAL_SECTORS  = 16384;   // 8 MiB
 const long RESERVED       = 1;
@@ -28,6 +30,9 @@ const long ROOT_START     = RESERVED + NFATS * FAT_SECTORS;
 
 extern fn long lx_syscall(long n, long a, long b, long c, long d);
 
+char[INTERP_CAP] g_interp;
+long g_interp_len;
+
 fn void* memset(void* dst, int val, ulong n) @export("memset")
 {
     char* p = (char*)dst;
@@ -35,10 +40,39 @@ fn void* memset(void* dst, int val, ulong n) @export("memset")
     return dst;
 }
 
+fn void* memcpy(void* d, void* s, ulong n) @export("memcpy")
+{
+    char* dd = (char*)d;
+    char* ss = (char*)s;
+    for (ulong i = 0; i < n; i++) { dd[i] = ss[i]; }
+    return d;
+}
+
+fn ulong strlen(char* s) @export("strlen")
+{
+    ulong n = 0;
+    while (s[n] != 0) n++;
+    return n;
+}
+
 fn long lx_open(char* p, long fl)  { return lx_syscall(2, (long)p, fl, MODE_0666, 0); }
 fn long lx_write(long fd, char* b, long n){ return lx_syscall(1, fd, (long)b, n, 0); }
+fn long lx_read(long fd, char* b, long n) { return lx_syscall(0, fd, (long)b, n, 0); }
 fn long lx_close(long fd)          { return lx_syscall(3, fd, 0, 0, 0); }
 fn long lx_lseek(long fd, long o, long wh){ return lx_syscall(8, fd, o, wh, 0); }
+fn void lx_puts(long fd, char* s) { long n = 0; while (s[n] != 0) n++; lx_write(fd, s, n); }
+
+char[24] g_dec;
+fn char* decstr(long v)
+{
+    for (int i = 0; i < 24; i++) { g_dec[i] = 0; }
+    int n = 0;
+    if (v == 0) { g_dec[0] = '0'; g_dec[1] = 0; return &g_dec[0]; }
+    while (v > 0 && n < 23) { g_dec[n] = (char)('0' + (v % 10)); v /= 10; n++; }
+    for (int i = 0; i < n / 2; i++) { char t = g_dec[i]; g_dec[i] = g_dec[n-1-i]; g_dec[n-1-i] = t; }
+    g_dec[n] = 0;
+    return &g_dec[0];
+}
 
 fn void put_u16(char* b, long off, uint v){ b[off]=(char)(v&0xFF); b[off+1]=(char)((v>>8)&0xFF); }
 fn void put_u32(char* b, long off, uint v){ b[off]=(char)(v&0xFF); b[off+1]=(char)((v>>8)&0xFF); b[off+2]=(char)((v>>16)&0xFF); b[off+3]=(char)((v>>24)&0xFF); }
@@ -55,13 +89,37 @@ fn int xk_host_main(int argc, char** argv) @export("xk_host_main")
 {
     if (argc < 2)
     {
-        lx_write(2, (char*)"usage: mkfat out.img [token]\n", 28);
+        lx_write(2, (char*)"usage: mkfat out.img [token] [interp.so]\n", 44);
         return 1;
     }
     // Optional 3rd arg = AI token (injected at build via $XENOS_AI_TOKEN; never
     // hard-coded/committed). Default stays a placeholder.
     char* token = (char*)"PLACEHOLDER_TOKEN_CHANGE_ME";
     if (argc > 2 && argv[2][0] != 0) { token = argv[2]; }
+    // Optional 4th arg = the musl dynamic linker (libc.so) to embed as LIBC.SO
+    // on the volume so xenOS can dynamically link Linux programs.
+    g_interp_len = 0;
+    if (argc > 3 && argv[3][0] != 0)
+    {
+        long ifd = lx_open(argv[3], O_RDONLY);
+        if (ifd >= 0)
+        {
+            while (g_interp_len < INTERP_CAP)
+            {
+                long rr = lx_read(ifd, &g_interp[g_interp_len], INTERP_CAP - g_interp_len);
+                if (rr <= 0) break;
+                g_interp_len += rr;
+            }
+            lx_close(ifd);
+            lx_puts(2, (char*)"mkfat: embedded LIBC.SO, ");
+            lx_puts(2, decstr(g_interp_len));
+            lx_puts(2, (char*)" bytes\n");
+        }
+        else
+        {
+            lx_write(2, (char*)"mkfat: could not read interp.so\n", 32);
+        }
+    }
     long fd = lx_open(argv[1], O_WRONLY | O_CREAT | O_TRUNC);
     if (fd < 0) { lx_write(2, (char*)"mkfat: cannot open output\n", 27); return 1; }
 
@@ -97,6 +155,16 @@ fn int xk_host_main(int argc, char** argv) @export("xk_host_main")
     put_u16(&fat[0], 2, 0xFFFF);       // cluster 2 (MOTD) = end of chain
     put_u16(&fat[0], 4, 0xFFFF);       // cluster 3 (README) = end of chain
     put_u16(&fat[0], 6, 0xFFFF);       // cluster 4 (AI.CFG) = end of chain
+    // cluster 5.. : the dynamic linker (LIBC.SO), a multi-cluster chain
+    if (g_interp_len > 0)
+    {
+        long icl = (g_interp_len + SECTOR - 1) / SECTOR;
+        for (long c = 0; c < icl; c++)
+        {
+            uint fval = (c + 1 < icl) ? (uint)(5 + c + 1) : 0xFFFF;
+            put_u16(&fat[0], 2 * (5 + c), fval);
+        }
+    }
     lx_lseek(fd, FAT_START * SECTOR, SEEK_SET);
     lx_write(fd, &fat[0], FAT_SECTORS * SECTOR);
 
@@ -130,6 +198,14 @@ fn int xk_host_main(int argc, char** argv) @export("xk_host_main")
     root[64 + 11] = (char)0x20;
     put_u16(&root[0], 26 + 64, 4);
     put_u32(&root[0], 28 + 64, alen);
+    // entry 3: LIBC.SO - the musl dynamic linker, if embedded
+    if (g_interp_len > 0)
+    {
+        put_name(&root[96], (char*)"LIBC", (char*)"SO");
+        root[96 + 11] = (char)0x20;
+        put_u16(&root[0], 26 + 96, 5);
+        put_u32(&root[0], 28 + 96, (uint)g_interp_len);
+    }
     lx_lseek(fd, ROOT_START * SECTOR, SEEK_SET);
     lx_write(fd, &root[0], ROOT_SECTORS * SECTOR);
 
@@ -142,6 +218,22 @@ fn int xk_host_main(int argc, char** argv) @export("xk_host_main")
     lx_write(fd, (char*)README, 47);
     lx_lseek(fd, (DATA_START + 2) * SECTOR, SEEK_SET);
     lx_write(fd, &aicfg[0], alen);
+    // LIBC.SO data (cluster 5 = sector DATA_START+3), sector by sector
+    if (g_interp_len > 0)
+    {
+        long start_sec = DATA_START + (5 - 2);
+        for (long i = 0; i < g_interp_len; i += SECTOR)
+        {
+            long secn = start_sec + i / SECTOR;
+            lx_lseek(fd, secn * SECTOR, SEEK_SET);
+            char[512] secbuf;
+            long chunk = g_interp_len - i;
+            if (chunk > SECTOR) chunk = SECTOR;
+            for (long k = 0; k < chunk; k++) { secbuf[k] = g_interp[i + k]; }
+            for (long k = chunk; k < SECTOR; k++) { secbuf[k] = 0; }
+            lx_write(fd, &secbuf[0], SECTOR);
+        }
+    }
 
     lx_close(fd);
     lx_write(2, (char*)"mkfat: wrote build/fat.img (8 MiB FAT16)\n", 41);

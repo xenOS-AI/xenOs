@@ -49,7 +49,8 @@ build_host_tool p256_test
 echo "[build] tls_handshake TLS1.2 ECDHE-RSA-AES128-GCM client vs openssl s_server"
 build_host_tool tls_handshake
 rm -f "$OUT/fat.img"
-"$OUT/mkfat" "$OUT/fat.img" "${XENOS_AI_TOKEN:-}"    # XENOS_AI_TOKEN (if set) is the live AI key; never committed
+INTERP=/usr/lib/musl/lib/libc.so   # musl's dynamic linker == its libc
+"$OUT/mkfat" "$OUT/fat.img" "${XENOS_AI_TOKEN:-}" "$INTERP"    # XENOS_AI_TOKEN (if set) is the live AI key; never committed
 cp -f "$OUT/fat.img" "$OUT/sata.img"    # identical volume shown to the AHCI controller
 
 echo "[build] kernel (C3, freestanding, elf-x64)"
@@ -63,16 +64,22 @@ if command -v musl-gcc >/dev/null 2>&1; then
     rm -f "$SRC/xk_ublob.c3"     # mkbin's lx_open creates mode-0000; truncate may then fail
     "$OUT/mkbin" "$OUT/uhello" "$SRC/xk_ublob.c3" linux_blob
     echo "    bundled uhello = $(stat -c%s "$OUT/uhello") bytes"
+    echo "[build] uhello DYNAMIC musl ELF (dynamic main; interp loaded from FAT)"
+    musl-gcc -no-pie -O2 -o "$OUT/uhello_dyn" "$ROOT/tools/uhello.c"
+    rm -f "$SRC/xk_dynblob.c3"
+    "$OUT/mkbin" "$OUT/uhello_dyn" "$SRC/xk_dynblob.c3" dyn_blob
+    echo "    dynamic main = $(stat -c%s "$OUT/uhello_dyn") bytes"
 else
-    echo "    [warn] musl-gcc not found; building a placeholder xk_ublob.c3"
+    echo "    [warn] musl-gcc not found; building placeholder blobs"
     printf '' > "$SRC/xk_ublob.c3"
+    printf '' > "$SRC/xk_dynblob.c3"
 fi
 mkdir -p "$OUT/ccobl"
 rm -f "$OUT"/ccobl/obj/elf-x64/*.o
 ( cd "$OUT/ccobl" && c3c compile-only --target elf-x64 --no-entry --use-stdlib=no --x86cpu=baseline --x86vec=none -O2 -g0 \
     "$SRC/xk_main.c3" "$SRC/xk_core.c3" "$SRC/xk_intr.c3" "$SRC/xk_kbd.c3" \
     "$SRC/xk_mouse.c3" "$SRC/xk_font.c3" "$SRC/xk_fb.c3" \
-    "$SRC/xk_wm.c3" "$SRC/xk_apps.c3" "$SRC/xk_sched.c3" "$SRC/xk_shell.c3" "$SRC/xk_mem.c3" "$SRC/xk_sys.c3" "$SRC/xk_alloc.c3" "$SRC/xk_umode.c3" "$SRC/xk_uprog.c3" "$SRC/xk_linux.c3" "$SRC/xk_ublob.c3" "$SRC/xk_pci.c3" "$SRC/xk_rtc.c3" "$SRC/xk_ata.c3" "$SRC/xk_fat.c3" "$SRC/xk_ahci.c3" "$SRC/xk_ai_cfg.c3" "$SRC/xk_ai_client.c3" "$SRC/xk_chat.c3" "$SRC/xk_net.c3" "$SRC/xk_ip.c3" "$SRC/xk_tcp.c3" "$SRC/xk_http.c3" "$SRC/xk_agent.c3" "$SRC/xk_sha256.c3" "$SRC/xk_tls.c3" "$SRC/xk_aes.c3" )
+    "$SRC/xk_wm.c3" "$SRC/xk_apps.c3" "$SRC/xk_sched.c3" "$SRC/xk_shell.c3" "$SRC/xk_mem.c3" "$SRC/xk_sys.c3" "$SRC/xk_alloc.c3" "$SRC/xk_umode.c3" "$SRC/xk_uprog.c3" "$SRC/xk_linux.c3" "$SRC/xk_ublob.c3" "$SRC/xk_dynblob.c3" "$SRC/xk_pci.c3" "$SRC/xk_rtc.c3" "$SRC/xk_ata.c3" "$SRC/xk_fat.c3" "$SRC/xk_ahci.c3" "$SRC/xk_ai_cfg.c3" "$SRC/xk_ai_client.c3" "$SRC/xk_chat.c3" "$SRC/xk_net.c3" "$SRC/xk_ip.c3" "$SRC/xk_tcp.c3" "$SRC/xk_http.c3" "$SRC/xk_agent.c3" "$SRC/xk_sha256.c3" "$SRC/xk_tls.c3" "$SRC/xk_aes.c3" )
 echo "[build] asm runtime"
 nasm -f elf64 -o "$OUT/asm_runtime.o" "$SRC/asm_runtime.asm"
 
