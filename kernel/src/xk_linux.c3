@@ -98,6 +98,7 @@ const long EINVAL = 22;
 const long ENOTTY = 25;
 const long ENOSYS = 38;
 const long EMFILE = 24;
+const long EPIPE  = 32;
 
 fn uint rd_u16(char* b, uint off) { return (uint)((char)b[off]) | ((uint)((char)b[off+1]) << 8); }
 fn uint rd_u32(char* b, uint off)
@@ -135,16 +136,84 @@ fn void st8(ulong a, ulong v)
 
 // ---- file-descriptor table (fd 0/1/2 are the standard stream slots) ----
 const int MAX_FDS = 32;
-struct LxFD { bool used; ulong buf; ulong len; ulong pos; }
+const uint FD_NONE = 0;
+const uint FD_FILE = 1;
+const uint FD_SOCK = 2;    // in-kernel byte-stream socket (AF_UNIX SOCK_STREAM)
+struct LxFD { bool used; uint type; ulong buf; ulong cap; ulong len; ulong pos; int peer; }
 LxFD[MAX_FDS] g_fd;
 LxFD[MAX_FDS] g_saved_parent_fds;   // snapshot taken at fork() to restore the parent
 
 fn void linux_fd_init()
 {
-    for (int i = 0; i < MAX_FDS; i++) { g_fd[i].used = false; g_fd[i].buf = 0; g_fd[i].len = 0; g_fd[i].pos = 0; }
-    g_fd[0].used = true;   // stdin
-    g_fd[1].used = true;   // stdout
-    g_fd[2].used = true;   // stderr
+    for (int i = 0; i < MAX_FDS; i++) { g_fd[i].used = false; g_fd[i].type = FD_NONE; g_fd[i].buf = 0; g_fd[i].cap = 0; g_fd[i].len = 0; g_fd[i].pos = 0; g_fd[i].peer = -1; }
+    g_fd[0].used = true; g_fd[0].type = FD_FILE;   // stdin
+    g_fd[1].used = true; g_fd[1].type = FD_FILE;   // stdout
+    g_fd[2].used = true; g_fd[2].type = FD_FILE;   // stderr
+}
+
+// ---- AF_UNIX socketpair (Phase A.4: in-kernel byte-stream transport). This is
+// the transport a future Wayland compositor/client pair will run over; for now a
+// single process can socketpair(AF_UNIX, SOCK_STREAM, 0, sv) and talk to itself
+// across the two descriptors. Buffers are kernel-heap rings; reads consume bytes,
+// writes append. A writer returns -EPIPE once the peer descriptor is closed.
+fn long lx_sock_write(long fd, char* buf, ulong len)
+{
+    // socketpair semantics: bytes written to one endpoint are received at the
+    // peer, so a write appends to the PEER's receive queue.
+    int peer = g_fd[(int)fd].peer;
+    if (peer < 0 || peer >= MAX_FDS || !g_fd[peer].used) return (long)(-EPIPE);
+    LxFD* s = &g_fd[peer];
+    ulong written = 0;
+    while (written < len)
+    {
+        if (s.len >= s.cap) break;                 // ring full: return partial
+        ulong tail = (s.pos + s.len) % s.cap;
+        ((char*)(ulong)s.buf)[tail] = ((char*)(ulong)buf)[written];
+        s.len++;
+        written++;
+    }
+    return (long)written;
+}
+
+fn long lx_sock_read(long fd, char* buf, ulong len)
+{
+    LxFD* s = &g_fd[(int)fd];
+    if (s.len == 0) return 0;                      // empty: immediate EOF (no blocking yet)
+    ulong got = 0;
+    while (got < len && s.len > 0)
+    {
+        ((char*)(ulong)buf)[got] = ((char*)(ulong)s.buf)[s.pos];
+        s.pos = (s.pos + 1) % s.cap;
+        s.len--;
+        got++;
+    }
+    return (long)got;
+}
+
+// socketpair(domain, type, protocol, int sv[2])  -- nr 53
+fn long lx_sockpair(ulong* a)
+{
+    if ((long)a[0] != 1) return (long)(-EINVAL);   // only AF_UNIX (1) for now
+    int f1 = -1; int f2 = -1;
+    for (int i = 3; i < MAX_FDS; i++) { if (!g_fd[i].used) { f1 = i; break; } }
+    for (int i = (f1 < 0 ? 3 : f1 + 1); i < MAX_FDS; i++) { if (!g_fd[i].used) { f2 = i; break; } }
+    if (f1 < 0 || f2 < 0) return (long)(-EMFILE);
+    char* b1 = (char*)kmalloc(4096);
+    char* b2 = (char*)kmalloc(4096);
+    if (b1 == null || b2 == null) { if (b1 != null) kfree((void*)b1); if (b2 != null) kfree((void*)b2); return (long)(-ENOMEM); }
+    g_fd[f1].used = true; g_fd[f1].type = FD_SOCK; g_fd[f1].buf = (ulong)b1; g_fd[f1].cap = 4096; g_fd[f1].len = 0; g_fd[f1].pos = 0; g_fd[f1].peer = f2;
+    g_fd[f2].used = true; g_fd[f2].type = FD_SOCK; g_fd[f2].buf = (ulong)b2; g_fd[f2].cap = 4096; g_fd[f2].len = 0; g_fd[f2].pos = 0; g_fd[f2].peer = f1;
+    ulong sv = a[3];
+    if (sv != 0)
+    {
+        ((char*)(ulong)sv)[0] = (char)(f1 & 0xFF);       ((char*)(ulong)sv)[1] = (char)((f1 >> 8) & 0xFF);
+        ((char*)(ulong)sv)[2] = (char)((f1 >> 16) & 0xFF); ((char*)(ulong)sv)[3] = (char)((f1 >> 24) & 0xFF);
+        ((char*)(ulong)sv)[4] = (char)(f2 & 0xFF);       ((char*)(ulong)sv)[5] = (char)((f2 >> 8) & 0xFF);
+        ((char*)(ulong)sv)[6] = (char)((f2 >> 16) & 0xFF); ((char*)(ulong)sv)[7] = (char)((f2 >> 24) & 0xFF);
+    }
+    xk_puts("[sock] socketpair(AF_UNIX) -> fds ");
+    xk_putdec(f1); xk_puts(" "); xk_putdec(f2); xk_puts("\r\n");
+    return 0;
 }
 
 fn long lx_do_open(char* path, long flags)
@@ -162,26 +231,41 @@ fn long lx_do_open(char* path, long flags)
     for (fdi = 0; fdi < MAX_FDS; fdi++) { if (!g_fd[fdi].used) break; }
     if (fdi >= MAX_FDS) { kfree(buf); return -EMFILE; }
     g_fd[fdi].used = true;
+    g_fd[fdi].type = FD_FILE;
     g_fd[fdi].buf = (ulong)buf;
     g_fd[fdi].len = (ulong)outlen;
     g_fd[fdi].pos = 0;
+    g_fd[fdi].peer = -1;
     return (long)fdi;
 }
 
 fn long lx_do_close(long fd)
 {
     if (fd < 0 || fd >= MAX_FDS || !g_fd[fd].used || fd <= 2) return -EBADF;
-    kfree((void*)g_fd[fd].buf);
+    if (g_fd[fd].type == FD_SOCK)
+    {
+        kfree((void*)g_fd[fd].buf);
+        int peer = g_fd[fd].peer;
+        if (peer >= 0 && peer < MAX_FDS && g_fd[peer].used && g_fd[peer].type == FD_SOCK) { g_fd[peer].peer = -1; }
+    }
+    else
+    {
+        kfree((void*)g_fd[fd].buf);
+    }
     g_fd[fd].used = false;
+    g_fd[fd].type = FD_NONE;
     g_fd[fd].buf = 0;
+    g_fd[fd].cap = 0;
     g_fd[fd].len = 0;
     g_fd[fd].pos = 0;
+    g_fd[fd].peer = -1;
     return 0;
 }
 
 fn long lx_do_read(long fd, char* buf, ulong len)
 {
     if (fd < 0 || fd >= MAX_FDS || !g_fd[fd].used) return -EBADF;
+    if (g_fd[fd].type == FD_SOCK) return lx_sock_read(fd, buf, len);
     if (fd == 0) return 0;                       // stdin: immediate EOF
     ulong pos  = g_fd[fd].pos;
     ulong l    = g_fd[fd].len;
@@ -194,7 +278,9 @@ fn long lx_do_read(long fd, char* buf, ulong len)
 
 fn long lx_do_write(long fd, char* buf, ulong len)
 {
-    if (fd != 1 && fd != 2) return -EBADF;       // only stdout/stderr so far
+    if (fd < 0 || fd >= MAX_FDS || !g_fd[fd].used) return -EBADF;
+    if (g_fd[fd].type == FD_SOCK) return lx_sock_write(fd, buf, len);
+    if (fd != 1 && fd != 2) return -EBADF;       // only stdout/stderr for files
     for (ulong i = 0; i < len; i++) { xk_serial_putc(((char*)(ulong)buf)[i]); }
     return (long)len;
 }
@@ -587,6 +673,7 @@ fn ulong xk_linux_dispatch(ulong nr, ulong* a) @export("xk_linux_dispatch")
     }
     else if (nr == 57) { return (ulong)lx_fork(a); }                           // fork
     else if (nr == 61) { return (ulong)lx_wait4(a); }                          // wait4
+    else if (nr == 53) { return (ulong)lx_sockpair(a); }                       // socketpair (AF_UNIX)
     else if (nr == 56 || nr == 58) { return (ulong)(-ENOSYS); }  // clone/vfork (threads: later)
     else if (nr == 41 || nr == 42 || nr == 49 || nr == 45 || nr == 44 || nr == 46 || nr == 50 || nr == 54) { return (ulong)(-ENOSYS); } // sockets
     // Unknown syscall: print which one, then ENOSYS (keeps musl's failure visible).
