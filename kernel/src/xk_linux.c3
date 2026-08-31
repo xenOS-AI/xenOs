@@ -257,6 +257,7 @@ fn long lx_sock_write(long fd, char* buf, ulong len)
         written++;
     }
     up_wake_all();                                 // wake any process blocked reading this
+    wl_serve_peer((uint)peer);                     // kernel Wayland compositor: answer client
     return (long)written;
 }
 
@@ -398,6 +399,7 @@ fn long lx_connect(ulong* a)
     g_fd[e].used = true; g_fd[e].type = FD_SOCK;
     g_sock[e].used = true; g_sock[e].buf = (ulong)b2; g_sock[e].cap = SOCK_CAP; g_sock[e].len = 0; g_sock[e].pos = 0; g_sock[e].peer = (int)cfd; g_sock[e].listener = false; g_sock[e].pn = 0; g_sock[e].spath[0] = 0;
     g_sock[srv].pending[g_sock[srv].pn++] = e;          // E waits in the listener's accept queue
+    if (sock_path_eq(&g_sock[srv].spath[0], "/run/wayland-0")) wl_register((uint)e, (uint)cfd);
     return 0;
 }
 
@@ -849,18 +851,34 @@ fn long lx_do_write(long fd, char* buf, ulong len)
 struct Iovec { ulong base; ulong len; }
 fn long lx_do_writev(long fd, ulong iov, int cnt)
 {
-    if (fd != 1 && fd != 2) return -EBADF;
     Iovec* v = (Iovec*)(ulong)iov;
     long total = 0;
-    for (int i = 0; i < cnt; i++)
+    if (fd == 1 || fd == 2)                 // stdout/stderr -> serial
     {
-        ulong base = v[i].base;
-        ulong len  = v[i].len;
-        if (len == 0) continue;
-        for (ulong j = 0; j < len; j++) { xk_serial_putc(((char*)(ulong)base)[j]); }
-        total += (long)len;
+        for (int i = 0; i < cnt; i++)
+        {
+            ulong base = v[i].base;
+            ulong len  = v[i].len;
+            if (len == 0) continue;
+            for (ulong j = 0; j < len; j++) { xk_serial_putc(((char*)(ulong)base)[j]); }
+            total += (long)len;
+        }
+        return total;
     }
-    return total;
+    if (fd >= 3 && fd < MAX_FDS && g_fd[fd].used && g_fd[fd].type == FD_SOCK)
+    {
+        for (int i = 0; i < cnt; i++)                       // Wayland/musl uses writev on sockets
+        {
+            ulong base = v[i].base;
+            ulong len  = v[i].len;
+            if (len == 0) continue;
+            long w = lx_sock_write(fd, (char*)(ulong)base, len);
+            if (w < 0) return w;                            // incl. compositor answer (wl_serve_peer)
+            total += w;
+        }
+        return total;
+    }
+    return -EBADF;
 }
 
 fn long lx_do_brk(ulong addr)
@@ -1599,6 +1617,7 @@ fn void linux_launch(ulong entry, ulong stack)
     linux_fd_init();
     up_register0();          // proc 0 = this first process, enters the scheduler
     if (e4_mount()) xk_puts("[linux] ext4 rootfs mounted\n");   // Phase C (secondary slave)
+    wl_compositor_init();                            // Phase D: kernel Wayland compositor
     xk_mask_hw_irqs(1);      // keep device IRQs off while the ring-3 process runs
     xk_set_cr3(g_linux_pml4);
     xk_enter_ring3(entry, stack);
