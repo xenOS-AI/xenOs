@@ -21,7 +21,8 @@ const uint WLSURF_ATTACH = 1;     // wl_surface.attach
 const uint WLSURF_COMMIT = 6;     // wl_surface.commit
 const uint WLSEAT_KB = 1;         // wl_seat.get_keyboard (new_id)
 const uint WLSEAT_PTR = 2;        // wl_seat.get_pointer (new_id)
-struct WlSur { bool used; uint surf_id; uint buf_base, bw, bh, bstride; bool attached; }
+const uint WLSURF_FRAME  = 3;     // wl_surface.frame (new_id callback)
+struct WlSur { bool used; uint surf_id; uint buf_base, bw, bh, bstride; bool attached; uint frame_cb; }
 struct WlConn { bool used; uint srvfd; uint clifd; uint robj; uint cbid;
                 uint shm_id, comp_id, surf_id, pool_id, seat_id, kb_id, ptr_id;
                 uint curw; WlSur[4] surfs; }
@@ -199,7 +200,7 @@ fn void wl_serve(int wix)
         else if (obj == c.comp_id && op == WLC_SURFACE && ms >= 12)
         {
             uint sid = wl_rd32(s, 8);
-            for (int i = 0; i < 4; i++) { if (!c.surfs[i].used) { c.surfs[i].used = true; c.surfs[i].surf_id = sid; c.surfs[i].bw = 0; c.surfs[i].attached = false; c.curw = (uint)i; break; } }
+            for (int i = 0; i < 4; i++) { if (!c.surfs[i].used) { c.surfs[i].used = true; c.surfs[i].surf_id = sid; c.surfs[i].bw = 0; c.surfs[i].attached = false; c.surfs[i].frame_cb = 0; c.curw = (uint)i; break; } }
         }
         else if (obj == c.seat_id && op == WLSEAT_KB && ms >= 12)
         {
@@ -236,12 +237,21 @@ fn void wl_serve(int wix)
                     int si = wl_find_surf(c, obj);
                     if (si >= 0) c.surfs[si].attached = true;
                 }
-                else if (op == WLSURF_COMMIT && ms >= 8)
-                {
-                    int si = wl_find_surf(c, obj);
-                    if (si >= 0 && c.surfs[si].attached) wl_present(wix, si);
-                    if (si >= 0) c.surfs[si].attached = false;
-                }
+                else if (op == WLSURF_FRAME && ms >= 12)
+                        {
+                            int si = wl_find_surf(c, obj);
+                            if (si >= 0) c.surfs[si].frame_cb = wl_rd32(s, 8);
+                        }
+                        else if (op == WLSURF_COMMIT && ms >= 8)
+                        {
+                            int si = wl_find_surf(c, obj);
+                            if (si >= 0)
+                            {
+                                if (c.surfs[si].attached) wl_present(wix, si);
+                                c.surfs[si].attached = false;
+                                if (c.surfs[si].frame_cb != 0) { wl_emit_cb_done(clifd, c.surfs[si].frame_cb); c.surfs[si].frame_cb = 0; }
+                            }
+                        }
         wl_pop(s, ms);
     }
 }
