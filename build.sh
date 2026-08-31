@@ -71,12 +71,12 @@ nasm -f bin -o "$OUT/user_prog.bin" "$ROOT/user/sys_prog.asm"
 "$OUT/mkbin" "$OUT/user_prog.bin" "$SRC/xk_uprog.c3" user_prog
 echo "[build] uhello static musl ELF (Linux test binary bundled into the kernel)"
 if command -v musl-gcc >/dev/null 2>&1; then
-    musl-gcc -static -no-pie -O2 -o "$OUT/uhello" "$ROOT/tools/u_shm.c"
+    musl-gcc -static -no-pie -O2 -o "$OUT/uhello" "$ROOT/tools/u_ext4.c"
     rm -f "$SRC/xk_ublob.c3"     # mkbin's lx_open creates mode-0000; truncate may then fail
     "$OUT/mkbin" "$OUT/uhello" "$SRC/xk_ublob.c3" linux_blob
     echo "    bundled uhello = $(stat -c%s "$OUT/uhello") bytes"
     echo "[build] uhello DYNAMIC musl ELF (dynamic main; interp loaded from FAT)"
-    musl-gcc -no-pie -O2 -o "$OUT/uhello_dyn" "$ROOT/tools/u_shm.c"
+    musl-gcc -no-pie -O2 -o "$OUT/uhello_dyn" "$ROOT/tools/u_ext4.c"
     rm -f "$SRC/xk_dynblob.c3"
     "$OUT/mkbin" "$OUT/uhello_dyn" "$SRC/xk_dynblob.c3" dyn_blob
     echo "    dynamic main = $(stat -c%s "$OUT/uhello_dyn") bytes"
@@ -90,7 +90,7 @@ rm -f "$OUT"/ccobl/obj/elf-x64/*.o
 ( cd "$OUT/ccobl" && c3c compile-only --target elf-x64 --no-entry --use-stdlib=no --x86cpu=baseline --x86vec=none -O2 -g0 \
     "$SRC/xk_main.c3" "$SRC/xk_core.c3" "$SRC/xk_intr.c3" "$SRC/xk_kbd.c3" \
     "$SRC/xk_mouse.c3" "$SRC/xk_font.c3" "$SRC/xk_fb.c3" \
-    "$SRC/xk_wm.c3" "$SRC/xk_apps.c3" "$SRC/xk_sched.c3" "$SRC/xk_shell.c3" "$SRC/xk_mem.c3" "$SRC/xk_sys.c3" "$SRC/xk_alloc.c3" "$SRC/xk_umode.c3" "$SRC/xk_uprog.c3" "$SRC/xk_linux.c3" "$SRC/xk_ublob.c3" "$SRC/xk_dynblob.c3" "$SRC/xk_pci.c3" "$SRC/xk_rtc.c3" "$SRC/xk_ata.c3" "$SRC/xk_fat.c3" "$SRC/xk_ahci.c3" "$SRC/xk_ai_cfg.c3" "$SRC/xk_ai_client.c3" "$SRC/xk_chat.c3" "$SRC/xk_net.c3" "$SRC/xk_ip.c3" "$SRC/xk_tcp.c3" "$SRC/xk_http.c3" "$SRC/xk_agent.c3" "$SRC/xk_sha256.c3" "$SRC/xk_tls.c3" "$SRC/xk_aes.c3" )
+    "$SRC/xk_wm.c3" "$SRC/xk_apps.c3" "$SRC/xk_sched.c3" "$SRC/xk_shell.c3" "$SRC/xk_mem.c3" "$SRC/xk_sys.c3" "$SRC/xk_alloc.c3" "$SRC/xk_umode.c3" "$SRC/xk_uprog.c3" "$SRC/xk_linux.c3" "$SRC/xk_ublob.c3" "$SRC/xk_dynblob.c3" "$SRC/xk_pci.c3" "$SRC/xk_rtc.c3" "$SRC/xk_ata.c3" "$SRC/xk_fat.c3" "$SRC/xk_ext4.c3" "$SRC/xk_ahci.c3" "$SRC/xk_ai_cfg.c3" "$SRC/xk_ai_client.c3" "$SRC/xk_chat.c3" "$SRC/xk_net.c3" "$SRC/xk_ip.c3" "$SRC/xk_tcp.c3" "$SRC/xk_http.c3" "$SRC/xk_agent.c3" "$SRC/xk_sha256.c3" "$SRC/xk_tls.c3" "$SRC/xk_aes.c3" )
 echo "[build] asm runtime"
 nasm -f elf64 -o "$OUT/asm_runtime.o" "$SRC/asm_runtime.asm"
 

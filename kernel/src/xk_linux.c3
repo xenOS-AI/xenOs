@@ -646,6 +646,27 @@ fn long lx_do_open(char* path, long flags)
         g_fd[fdi].buf = (ulong)buf; g_fd[fdi].len = n; g_fd[fdi].pos = 0; g_fd[fdi].peer = -1;
         return (long)fdi;
     }
+    if (g_e4)                                  // else: ext4 root filesystem
+    {
+        uint ino = e4_resolve(p);
+        if (ino != 0)
+        {
+            uint mode = e4_mode(ino);
+            if ((mode & 0xF000u) == 0x4000u) return (long)(-EISDIR);
+            uint fsz = e4_size(ino);
+            uint cap2 = fsz + 1; if (cap2 < 256) cap2 = 256; if (cap2 > 65536) cap2 = 65536;
+            char* buf = (char*)kmalloc(cap2);
+            if (buf == null) return (long)(-ENOMEM);
+            uint n = 0;
+            e4_data(ino, buf, cap2, &n);
+            int fdi = -1;
+            for (fdi = 3; fdi < MAX_FDS; fdi++) { if (!g_fd[fdi].used) break; }
+            if (fdi >= MAX_FDS) { kfree((void*)buf); return (long)(-EMFILE); }
+            g_fd[fdi].used = true; g_fd[fdi].type = FD_FILE;
+            g_fd[fdi].buf = (ulong)buf; g_fd[fdi].len = n; g_fd[fdi].pos = 0; g_fd[fdi].peer = -1;
+            return (long)fdi;
+        }
+    }
     uint cap = 65536;
     char* buf = (char*)kmalloc(cap);
     if (buf == null) return -ENOMEM;
@@ -992,6 +1013,17 @@ fn long lx_stat_path(char* path, char* sb)
         if (vf == VF_DIR) { lx_stat_fill(sb, 0, 0, true); return 0; }
         if (vf == VF_PROC) { lx_stat_fill(sb, 0, 32, false); return 0; }
     }
+    if (g_e4)                                  // ext4 root filesystem
+    {
+        uint ino2 = e4_resolve(p);
+        if (ino2 != 0)
+        {
+            uint mm = e4_mode(ino2);
+            uint sze = e4_size(ino2);
+            lx_stat_fill(sb, 0, sze, (mm & 0xF000u) == 0x4000u);
+            return 0;
+        }
+    }
     ulong size = 0;
     bool isdir = false;
     if (!lx_fat_find(path, &size, &isdir)) return -ENOENT;
@@ -1261,6 +1293,7 @@ fn ulong xk_linux_dispatch(ulong nr, ulong* a) @export("xk_linux_dispatch")
         int gp = 0;
         while ((char)pp[0] == '/' && gp < 16) { pp++; gp++; }
         if (vf_classify(pp) != VF_UNKNOWN) return 0;
+        if (g_e4 && e4_resolve(pp) != 0) return 0;   // ext4 rootfs
         ulong s; bool d;
         return (ulong)(lx_fat_find((char*)(ulong)a[0], &s, &d) ? 0 : -ENOENT);
     }
@@ -1436,6 +1469,7 @@ fn void linux_launch(ulong entry, ulong stack)
     xk_puts(")\r\n");
     linux_fd_init();
     up_register0();          // proc 0 = this first process, enters the scheduler
+    if (e4_mount()) xk_puts("[linux] ext4 rootfs mounted\n");   // Phase C (secondary slave)
     xk_mask_hw_irqs(1);      // keep device IRQs off while the ring-3 process runs
     xk_set_cr3(g_linux_pml4);
     xk_enter_ring3(entry, stack);
