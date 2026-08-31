@@ -151,6 +151,7 @@ const uint FD_EPOLL = 3;   // epoll interest-list fd
 const uint FD_NULL  = 4;   // /dev/null
 const uint FD_ZERO  = 5;   // /dev/zero
 const uint FD_SHM   = 6;   // /dev/shm tmpfs file (wl_shm pool primitive)
+const uint FD_EVENT = 7;   // eventfd (compositor main-loop primitive)
 struct LxFD { bool used; uint type; ulong buf; ulong cap; ulong len; ulong pos; int peer;
               bool listener; char[24] spath; int[4] pending; uint pn; }
 LxFD[MAX_FDS] g_fd;
@@ -171,6 +172,7 @@ int[MAX_FDS] g_epoll_of;             // epfd -> set index (-1 = not an epoll fd)
 const int MAX_SHM = 8;
 struct ShmFile { bool used; char[24] name; uint size; }
 ShmFile[MAX_SHM] g_shmfile;
+uint[MAX_FDS] g_eventfd;              // eventfd counters (FD_EVENT)
 
 // ---- concurrent user processes (Phase A.1) ----
 // Cooperative scheduler: blocking syscalls park the current process and switch to
@@ -450,7 +452,8 @@ fn long lx_poll(ulong* a)
                 if (sock_writable(&g_sock[fd])) rev = (ushort)(rev | POLLOUT);
             }
             else if (g_fd[fd].type == FD_FILE) { rev = (ushort)(POLLIN | POLLOUT); }
-            else { rev = POLLNVAL; }
+                        else if (g_fd[fd].type == FD_EVENT) { if (g_eventfd[fd] > 0) rev = (ushort)POLLIN; }
+                        else { rev = (ushort)POLLNVAL; }
         }
         else { rev = POLLNVAL; }
         ((char*)pf)[6] = (char)(rev & 0xFF);
@@ -472,6 +475,7 @@ fn uint fd_ready_events(int fd)
         return r;
     }
     if (g_fd[fd].type == FD_FILE) return (uint)(POLLIN | POLLOUT);
+    if (g_fd[fd].type == FD_EVENT) return g_eventfd[fd] > 0 ? (uint)POLLIN : 0;
     return (uint)POLLERR;
 }
 
@@ -674,6 +678,18 @@ fn long lx_ftruncate(ulong* a)
     return 0;
 }
 
+// eventfd(initval, flags) -- nr 290: an epoll-ready counter (wl_event_loop core).
+fn long lx_eventfd(ulong* a)
+{
+    int fdi = -1;
+    for (int i = 3; i < MAX_FDS; i++) { if (!g_fd[i].used) { fdi = i; break; } }
+    if (fdi < 0) return (long)(-EMFILE);
+    g_fd[fdi].used = true; g_fd[fdi].type = FD_EVENT;
+    g_fd[fdi].buf = 0; g_fd[fdi].len = 0; g_fd[fdi].pos = 0; g_fd[fdi].peer = -1;
+    g_eventfd[fdi] = (uint)a[0];
+    return (long)fdi;
+}
+
 fn long lx_do_open(char* path, long flags)
 {
     char* p = path;
@@ -761,9 +777,13 @@ fn long lx_do_close(long fd)
         if (si >= 0 && si < MAX_EPOLL_SETS) { g_epolls[si].used = false; }
         g_epoll_of[fd] = -1;
     }
+    else if (g_fd[fd].type == FD_EVENT)
+    {
+        g_eventfd[fd] = 0;
+    }
     else
     {
-        kfree((void*)g_fd[fd].buf);
+        if (g_fd[fd].buf != 0) kfree((void*)g_fd[fd].buf);
     }
     g_fd[fd].used = false;
     g_fd[fd].type = FD_NONE;
@@ -782,6 +802,16 @@ fn long lx_do_read(long fd, char* buf, ulong len)
 {
     if (fd < 0 || fd >= MAX_FDS || !g_fd[fd].used) return -EBADF;
     if (g_fd[fd].type == FD_SOCK) return lx_sock_read(fd, buf, len);
+    if (g_fd[fd].type == FD_EVENT)
+    {
+        if (g_eventfd[fd] == 0) return (long)(-EAGAIN);
+        uint v = g_eventfd[fd];
+        g_eventfd[fd] = 0;
+        ((char*)(ulong)buf)[0] = (char)(v & 0xFF);       ((char*)(ulong)buf)[1] = (char)((v >> 8) & 0xFF);
+        ((char*)(ulong)buf)[2] = (char)((v >> 16) & 0xFF); ((char*)(ulong)buf)[3] = (char)((v >> 24) & 0xFF);
+        ((char*)(ulong)buf)[4] = 0; ((char*)(ulong)buf)[5] = 0; ((char*)(ulong)buf)[6] = 0; ((char*)(ulong)buf)[7] = 0;
+        return 8;
+    }
     if (g_fd[fd].type == FD_NULL) return 0;                       // /dev/null: EOF
     if (g_fd[fd].type == FD_ZERO)                                  // /dev/zero: NULs
     {
@@ -802,6 +832,14 @@ fn long lx_do_write(long fd, char* buf, ulong len)
 {
     if (fd < 0 || fd >= MAX_FDS || !g_fd[fd].used) return -EBADF;
     if (g_fd[fd].type == FD_SOCK) return lx_sock_write(fd, buf, len);
+    if (g_fd[fd].type == FD_EVENT)
+    {
+        uint add = (uint)(((char*)(ulong)buf)[0]) | ((uint)(((char*)(ulong)buf)[1]) << 8)
+                 | ((uint)(((char*)(ulong)buf)[2]) << 16) | ((uint)(((char*)(ulong)buf)[3]) << 24);
+        if (g_eventfd[fd] + add < g_eventfd[fd]) return (long)(-EAGAIN);   // overflow
+        g_eventfd[fd] += add;
+        return 8;
+    }
     if (g_fd[fd].type == FD_NULL || g_fd[fd].type == FD_ZERO) return (long)len;   // discard
     if (fd != 1 && fd != 2) return -EBADF;       // only stdout/stderr for files
     for (ulong i = 0; i < len; i++) { xk_serial_putc(((char*)(ulong)buf)[i]); }
@@ -1298,6 +1336,8 @@ fn ulong xk_linux_dispatch(ulong nr, ulong* a) @export("xk_linux_dispatch")
     else if (nr == 3)       { return (ulong)lx_do_close((long)a[0]); }
     else if (nr == 20)      { return (ulong)lx_do_writev((long)a[0], a[1], (int)a[2]); }
     else if (nr == 12)      { return (ulong)lx_do_brk(a[0]); }
+    else if (nr == 83)      { return 0; }                            // sysinfo (permissive)
+    else if (nr == 290)     { return (ulong)lx_eventfd(a); }                 // eventfd
     else if (nr == 39)      { return g_linux_pid; }
     else if (nr == 218)     { g_tid_addr = a[0]; return g_linux_pid; }
     else if (nr == 16)      { return (ulong)lx_ioctl(a); }         // ioctl
@@ -1415,6 +1455,8 @@ fn ulong xk_linux_dispatch(ulong nr, ulong* a) @export("xk_linux_dispatch")
     else if (nr == 7) { return (ulong)lx_poll(a); }                              // poll
     else if (nr == 271) { return (ulong)lx_poll(a); }                            // ppoll (timeout/sigmask ignored)
     else if (nr == 291) { return (ulong)lx_epoll_create1(a); }                   // epoll_create1
+    else if (nr == 233) { return (ulong)lx_epoll_ctl(a); }                     // epoll_ctl
+    else if (nr == 232) { return (ulong)lx_epoll_wait(a); }                    // epoll_wait
     else if (nr == 281) { return (ulong)lx_epoll_wait(a); }                      // epoll_pwait
     else if (nr == 56 || nr == 58) { return (ulong)(-ENOSYS); }  // clone/vfork (threads: later)
     else if (nr == 45 || nr == 44 || nr == 46 || nr == 54) { return (ulong)(-ENOSYS); } // sockets (sendmsg/recvmsg/etc)
