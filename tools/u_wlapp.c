@@ -12,11 +12,20 @@
 #define H 240
 static struct wl_compositor* comp;
 static struct wl_shm* shm;
+static struct wl_seat* seat;
+static uint32_t g_keys;
+static void kb_key(void* d, struct wl_keyboard* kb, uint32_t serial, uint32_t time, uint32_t key, uint32_t state)
+{
+    (void)d; (void)kb; (void)serial; (void)time;
+    printf("[app] KEY key=%u state=%u\n", key, state);
+    if (state == 0) g_keys++;
+}
 static void reg_global(void* d, struct wl_registry* r, uint32_t name, const char* itf, uint32_t ver)
 {
-    (void)d;
+    (void)d; (void)ver;
     if (!strcmp(itf, "wl_compositor")) comp = wl_registry_bind(r, name, &wl_compositor_interface, 4);
     else if (!strcmp(itf, "wl_shm"))   shm   = wl_registry_bind(r, name, &wl_shm_interface, 1);
+    else if (!strcmp(itf, "wl_seat"))  seat  = wl_registry_bind(r, name, &wl_seat_interface, 6);
 }
 static void reg_remove(void* d, struct wl_registry* r, uint32_t n) { (void)d;(void)r;(void)n; }
 int main(void)
@@ -46,5 +55,12 @@ int main(void)
     wl_surface_commit(s);
     wl_display_roundtrip(d);
     printf("[app] surface attach+commit sent; compositor should PRESENT it\n");
+    if (seat) {                       // bind keyboard: receive real wl_keyboard.key events
+        struct wl_keyboard* kb = wl_seat_get_keyboard(seat);
+        struct wl_keyboard_listener kbl = { NULL, NULL, NULL, kb_key, NULL, NULL };
+        wl_keyboard_add_listener(kb, &kbl, NULL);
+        wl_display_roundtrip(d);
+        printf("[app] keyboard bound, %s\n", g_keys ? "KEY RECEIVED" : "no keys");
+    }
     return 0;
 }
