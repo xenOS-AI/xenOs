@@ -874,10 +874,30 @@ fn long lx_do_brk(ulong addr)
     return (long)g_user_brk;
 }
 
-fn long lx_do_mmap(ulong len, ulong flags)
+fn long lx_do_mmap(ulong len, ulong flags, long fd_parm, ulong offset)
 {
     ulong want = (len + 4095) & ~((ulong)4095);
     if (want == 0) want = 4096;
+    // MAP_PRIVATE file-backed: what ld-musl uses to map a DT_NEEDED .so from disk.
+    if (fd_parm > 0 && (flags & 0x20u) == 0)
+    {
+        if (fd_parm >= MAX_FDS || !g_fd[fd_parm].used || g_fd[fd_parm].type != FD_FILE) return (long)(-EBADF);
+        if (offset > g_fd[fd_parm].len) return (long)(-EINVAL);
+        if (g_mmap_cur + want > LX_MMAP_END) return (long)(-ENOMEM);
+        ulong v = g_mmap_cur;
+        g_mmap_cur += want;
+        // copy the file's bytes (identity phys==vaddr region) - tail zero-filled
+        ulong srcoff = offset;
+        ulong avail = g_fd[fd_parm].len - srcoff;
+        ulong ncopy = avail < want ? avail : want;
+        for (ulong i = 0; i < ncopy; i++) { ((char*)v)[i] = ((char*)(ulong)g_fd[fd_parm].buf)[srcoff + i]; }
+        for (ulong i = ncopy; i < want; i++) { ((char*)v)[i] = 0; }
+        for (ulong pg = v & ~(ulong)0x1FFFFF; pg <= (v + want) & ~(ulong)0x1FFFFF; pg += (ulong)0x200000)
+        {
+            mark_user_pde(g_linux_pml4, pg);
+        }
+        return (long)v;
+    }
     if (flags & 0x1ul)              // MAP_SHARED: a dedicated shared 2 MiB slot
     {
         ulong v = (g_mmap_cur + 0x1FFFFFul) & ~(ulong)0x1FFFFF;
@@ -1341,7 +1361,7 @@ fn ulong xk_linux_dispatch(ulong nr, ulong* a) @export("xk_linux_dispatch")
     else if (nr == 39)      { return g_linux_pid; }
     else if (nr == 218)     { g_tid_addr = a[0]; return g_linux_pid; }
     else if (nr == 16)      { return (ulong)lx_ioctl(a); }         // ioctl
-    else if (nr == 9)       { return (ulong)lx_do_mmap(a[1], a[3]); } // mmap (anon; MAP_SHARED/PRIVATE)
+    else if (nr == 9)       { return (ulong)lx_do_mmap(a[1], a[3], (long)a[4], a[5]); } // mmap (MAP_PRIVATE file / SHARED / anon)
     else if (nr == 11)      { return 0; }                           // munmap
     else if (nr == 10)      { return 0; }                           // mprotect
     else if (nr == 77)      { return (ulong)lx_ftruncate(a); }               // ftruncate (/dev/shm)
