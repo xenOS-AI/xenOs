@@ -1002,6 +1002,45 @@ fn long lx_uname(char* buf)
     return 0;
 }
 
+// ---- Phase A.5: ioctl dispatch (nr 16) ----
+const ulong TCGETS = 0x5401;
+const ulong FBIOGET_VSCREENINFO = 0x4600;
+
+fn long lx_ioctl(ulong* a)
+{
+    ulong req = a[1];            // a[0]=fd ignored: dispatch by request only for now
+    ulong arg = a[2];
+    if (req == TIOCGWINSZ)
+    {
+        // struct winsize { ushort ws_row, ws_col, ws_xpixel, ws_ypixel } = 8 bytes
+        if (arg != 0)
+        {
+            ((char*)arg)[0] = (char)25; ((char*)arg)[1] = 0;        // ws_row
+            ((char*)arg)[2] = (char)80; ((char*)arg)[3] = 0;        // ws_col
+            ((char*)arg)[4] = (char)(g_fb_w & 0xFF); ((char*)arg)[5] = (char)((g_fb_w >> 8) & 0xFF);
+            ((char*)arg)[6] = (char)(g_fb_h & 0xFF); ((char*)arg)[7] = (char)((g_fb_h >> 8) & 0xFF);
+        }
+        return 0;
+    }
+    if (req == FBIOGET_VSCREENINFO)
+    {
+        // struct fb_var_screeninfo head: xres@0,yres@4,xres_virtual@8,yres_virtual@12,
+        // xoffset@16,yoffset@20,bits_per_pixel@24
+        if (arg != 0)
+        {
+            ((char*)arg)[0] = (char)(g_fb_w & 0xFF); ((char*)arg)[1] = (char)((g_fb_w >> 8) & 0xFF);
+            ((char*)arg)[2] = (char)((g_fb_w >> 16) & 0xFF); ((char*)arg)[3] = (char)((g_fb_w >> 24) & 0xFF);
+            ((char*)arg)[4] = (char)(g_fb_h & 0xFF); ((char*)arg)[5] = (char)((g_fb_h >> 8) & 0xFF);
+            ((char*)arg)[6] = (char)((g_fb_h >> 16) & 0xFF); ((char*)arg)[7] = (char)((g_fb_h >> 24) & 0xFF);
+            ((char*)arg)[24] = (char)32; ((char*)arg)[25] = 0;      // bits_per_pixel (full 32-bit)
+            ((char*)arg)[26] = 0; ((char*)arg)[27] = 0;
+        }
+        return 0;
+    }
+    if (req == TCGETS || req == 0x5402 || req == 0x5403 || req == 0x5404) return 0;  // tty present
+    return (long)(-ENOTTY);
+}
+
 // ---- the Linux syscall dispatcher (called by syscall_entry in asm) ----
 //   ulong xk_linux_dispatch(ulong nr, ulong* a)  -- a[0..5] = a1..a6 (sysV)
 // A negative return is a Linux errno (musl negates it into errno). exit_group
@@ -1143,7 +1182,7 @@ fn ulong xk_linux_dispatch(ulong nr, ulong* a) @export("xk_linux_dispatch")
     else if (nr == 12)      { return (ulong)lx_do_brk(a[0]); }
     else if (nr == 39)      { return g_linux_pid; }
     else if (nr == 218)     { g_tid_addr = a[0]; return g_linux_pid; }
-    else if (nr == 16)      { return (ulong)(-ENOTTY); }            // ioctl (no tty)
+    else if (nr == 16)      { return (ulong)lx_ioctl(a); }         // ioctl
     else if (nr == 9)       { return (ulong)lx_do_mmap(a[1]); }     // mmap (anonymous)
     else if (nr == 11)      { return 0; }                           // munmap
     else if (nr == 10)      { return 0; }                           // mprotect
@@ -1255,8 +1294,6 @@ fn ulong xk_linux_dispatch(ulong nr, ulong* a) @export("xk_linux_dispatch")
     else if (nr == 7) { return (ulong)lx_poll(a); }                              // poll
     else if (nr == 271) { return (ulong)lx_poll(a); }                            // ppoll (timeout/sigmask ignored)
     else if (nr == 291) { return (ulong)lx_epoll_create1(a); }                   // epoll_create1
-    else if (nr == 233) { return (ulong)lx_epoll_ctl(a); }                       // epoll_ctl
-    else if (nr == 232) { return (ulong)lx_epoll_wait(a); }                      // epoll_wait
     else if (nr == 281) { return (ulong)lx_epoll_wait(a); }                      // epoll_pwait
     else if (nr == 56 || nr == 58) { return (ulong)(-ENOSYS); }  // clone/vfork (threads: later)
     else if (nr == 45 || nr == 44 || nr == 46 || nr == 54) { return (ulong)(-ENOSYS); } // sockets (sendmsg/recvmsg/etc)
