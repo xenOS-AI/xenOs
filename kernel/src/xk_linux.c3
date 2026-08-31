@@ -150,6 +150,7 @@ const uint FD_SOCK = 2;    // in-kernel byte-stream socket (AF_UNIX SOCK_STREAM)
 const uint FD_EPOLL = 3;   // epoll interest-list fd
 const uint FD_NULL  = 4;   // /dev/null
 const uint FD_ZERO  = 5;   // /dev/zero
+const uint FD_SHM   = 6;   // /dev/shm tmpfs file (wl_shm pool primitive)
 struct LxFD { bool used; uint type; ulong buf; ulong cap; ulong len; ulong pos; int peer;
               bool listener; char[24] spath; int[4] pending; uint pn; }
 LxFD[MAX_FDS] g_fd;
@@ -165,6 +166,11 @@ struct EpollItem { bool used; int fd; uint events; ulong data; }
 struct EpollSet { bool used; EpollItem[MAX_EPOLL_ITEM] items; }
 EpollSet[MAX_EPOLL_SETS] g_epolls;
 int[MAX_FDS] g_epoll_of;             // epfd -> set index (-1 = not an epoll fd)
+
+// ---- /dev/shm tmpfs (Phase A.6): wl_shm pool primitive ----
+const int MAX_SHM = 8;
+struct ShmFile { bool used; char[24] name; uint size; }
+ShmFile[MAX_SHM] g_shmfile;
 
 // ---- concurrent user processes (Phase A.1) ----
 // Cooperative scheduler: blocking syscalls park the current process and switch to
@@ -617,11 +623,63 @@ fn ulong proc_stub_fill(char* name, char* out, uint cap)
     return (ulong)i;
 }
 
+// ---- /dev/shm tmpfs (Phase A.6): wl_shm pool file ----
+// Find a /dev/shm/<name> (p has "dev/shm/" leadership) -> shmfile index or -1.
+fn int shm_find(char* p)
+{
+    char[24] nme;
+    uint n2 = 0;
+    char* q = p + 8;
+    while (q[n2] != 0 && q[n2] != '/' && n2 < 23) { nme[n2] = q[n2]; n2++; }
+    nme[n2] = 0;
+    if (n2 == 0) return -1;
+    for (int i = 0; i < MAX_SHM; i++)
+    {
+        if (g_shmfile[i].used && xk_streq_ci(&g_shmfile[i].name[0], &nme[0])) return i;
+    }
+    return -1;
+}
+
+fn long lx_open_shm(char* p, long flags)
+{
+    char[24] nm;
+    uint nl = 0;
+    char* q = p + 8;
+    while (q[nl] != 0 && q[nl] != '/' && nl < 23) { nm[nl] = q[nl]; nl++; }
+    nm[nl] = 0;
+    if (nl == 0) return (long)(-ENOENT);
+    int idx = shm_find(p);
+    if (idx < 0)
+    {
+        if ((flags & 64) == 0) return (long)(-ENOENT);     // O_CREAT
+        for (int i = 0; i < MAX_SHM; i++) { if (!g_shmfile[i].used) { idx = i; break; } }
+        if (idx < 0) return (long)(-EMFILE);
+        g_shmfile[idx].used = true; g_shmfile[idx].size = 0;
+        for (uint k = 0; k <= nl; k++) { g_shmfile[idx].name[k] = nm[k]; }
+        xk_puts("[shm] /dev/shm/"); xk_puts(&nm[0]); xk_puts(" pool created\r\n");
+    }
+    int fdi = -1;
+    for (int i = 3; i < MAX_FDS; i++) { if (!g_fd[i].used) { fdi = i; break; } }
+    if (fdi < 0) return (long)(-EMFILE);
+    g_fd[fdi].used = true; g_fd[fdi].type = FD_SHM;
+    g_fd[fdi].buf = 0; g_fd[fdi].len = 0; g_fd[fdi].pos = 0; g_fd[fdi].peer = -1;
+    return (long)fdi;
+}
+
+fn long lx_ftruncate(ulong* a)
+{
+    long fd = (long)a[0];
+    if (fd < 0 || fd >= MAX_FDS || !g_fd[fd].used || g_fd[fd].type != FD_SHM) return (long)(-EINVAL);
+    g_fd[fd].len = (ulong)a[1];           // pool size (mmap backings it in v1)
+    return 0;
+}
+
 fn long lx_do_open(char* path, long flags)
 {
     char* p = path;
     int guard = 0;
     while ((char)p[0] == '/' && guard < 16) { p++; guard++; }
+    if (xk_startswith(p, "dev/shm/")) return lx_open_shm(p, flags);   // wl_shm pool
     int vf = vf_classify(p);
     if (vf == VF_NULL || vf == VF_ZERO)
     {
@@ -1013,6 +1071,13 @@ fn long lx_stat_path(char* path, char* sb)
         if (vf == VF_DIR) { lx_stat_fill(sb, 0, 0, true); return 0; }
         if (vf == VF_PROC) { lx_stat_fill(sb, 0, 32, false); return 0; }
     }
+    if (xk_startswith(p, "dev/shm/"))
+    {
+        int sidx = shm_find(p);
+        if (sidx < 0) return (long)(-ENOENT);
+        lx_stat_fill(sb, 0, g_shmfile[sidx].size, false);
+        return 0;
+    }
     if (g_e4)                                  // ext4 root filesystem
     {
         uint ino2 = e4_resolve(p);
@@ -1239,6 +1304,7 @@ fn ulong xk_linux_dispatch(ulong nr, ulong* a) @export("xk_linux_dispatch")
     else if (nr == 9)       { return (ulong)lx_do_mmap(a[1], a[3]); } // mmap (anon; MAP_SHARED/PRIVATE)
     else if (nr == 11)      { return 0; }                           // munmap
     else if (nr == 10)      { return 0; }                           // mprotect
+    else if (nr == 77)      { return (ulong)lx_ftruncate(a); }               // ftruncate (/dev/shm)
     else if (nr == 158)     // arch_prctl (TLS FS/GS base)
     {
         ulong op = a[0];
@@ -1293,6 +1359,7 @@ fn ulong xk_linux_dispatch(ulong nr, ulong* a) @export("xk_linux_dispatch")
         int gp = 0;
         while ((char)pp[0] == '/' && gp < 16) { pp++; gp++; }
         if (vf_classify(pp) != VF_UNKNOWN) return 0;
+        if (xk_startswith(pp, "dev/shm/")) return (ulong)(shm_find(pp) >= 0 ? 0 : (long)(-ENOENT));
         if (g_e4 && e4_resolve(pp) != 0) return 0;   // ext4 rootfs
         ulong s; bool d;
         return (ulong)(lx_fat_find((char*)(ulong)a[0], &s, &d) ? 0 : -ENOENT);
