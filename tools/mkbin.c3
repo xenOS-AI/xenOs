@@ -11,7 +11,7 @@ const int O_RDONLY = 0;
 const int O_WRONLY = 1;
 const int O_CREAT  = 64;
 const int O_TRUNC  = 512;
-const long BUF = 0x00400000;        // 4 MiB input staging + output buffer
+const long BUF = 0x01000000;        // 16 MiB input staging + output buffer (blobs can be ~100KB+)
 const long MODE_0666 = 438;          // 0o666 (default output creation mode)
 
 char[BUF] g_in;

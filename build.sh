@@ -10,6 +10,10 @@ BOOT="$ROOT/boot"
 KERNEL="$ROOT/kernel"
 SRC="$KERNEL/src"
 OUT="$ROOT/build"
+
+# Phase D cross-build sysroot (static-musl userspace deps: libffi etc.); built by
+# the scripts/crossbuild_deps.sh recipe into /home/timo/crossmusl/sysroot.
+CROSSROOT="${CROSSROOT:-/home/timo/crossmusl/sysroot}"
 mkdir -p "$OUT"
 
 echo "[build] stage1 boot sector"
@@ -71,7 +75,7 @@ nasm -f bin -o "$OUT/user_prog.bin" "$ROOT/user/sys_prog.asm"
 "$OUT/mkbin" "$OUT/user_prog.bin" "$SRC/xk_uprog.c3" user_prog
 echo "[build] uhello static musl ELF (Linux test binary bundled into the kernel)"
 if command -v musl-gcc >/dev/null 2>&1; then
-    musl-gcc -static -no-pie -O2 -o "$OUT/uhello" "$ROOT/tools/u_fmmap.c"
+    musl-gcc -static -no-pie -O2 -ffunction-sections -fdata-sections -Wl,--gc-sections -s -I"$CROSSROOT/include" -o "$OUT/uhello" "$ROOT/tools/u_ffi.c" "$CROSSROOT/lib/libffi.a"
     rm -f "$SRC/xk_ublob.c3"     # mkbin's lx_open creates mode-0000; truncate may then fail
     "$OUT/mkbin" "$OUT/uhello" "$SRC/xk_ublob.c3" linux_blob
     echo "    bundled uhello = $(stat -c%s "$OUT/uhello") bytes"
