@@ -36,6 +36,17 @@ echo "[build] mkbootimg (C3, freestanding; builds the El Torito boot image)"
 build_host_tool mkbootimg
 echo "[build] mkfat FAT16 data volume (C3, freestanding)"
 build_host_tool mkfat
+echo "[build] ext4read ext4 rootfs read-path self-test + test image (Phase C)"
+build_host_tool ext4read
+mkdir -p "$OUT/rootfs" "$OUT/rootfs/usr/lib"
+printf 'hello from ext4 rootfs xenOS\n' > "$OUT/rootfs/MOTD.TXT"
+printf '# ext4 build test\n' > "$OUT/rootfs/README.md"
+printf 'libwayland bytecheck\x00\x01\x02\n' > "$OUT/rootfs/usr/lib/libwayland.so.0"
+cp "$OUT/rootfs/MOTD.TXT" "$OUT/rootfs/usr/lib/motd.txt"
+ln -sf libwayland.so.0 "$OUT/rootfs/usr/lib/libwayland.so"
+rm -f "$OUT/rootfs.ext4"
+mke2fs -q -F -t ext4 -b 1024 -O ^has_journal,^metadata_csum,^64bit,^uninit_bg,^flex_bg,^dir_index,^sparse_super,^resize_inode,^extra_isize,^huge_file,^large_file,^ext_attr,^dir_nlink -d "$OUT/rootfs" "$OUT/rootfs.ext4" 4096
+echo "    rootfs.ext4 = $(stat -c%s "$OUT/rootfs.ext4") bytes"
 echo "[build] ai_mock host AI provider server (C3, freestanding)"
 build_host_tool ai_mock
 echo "[build] sha256_test TLS-hash self-test (C3, freestanding)"
