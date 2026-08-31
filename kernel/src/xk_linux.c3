@@ -56,6 +56,8 @@ ulong g_saved_parent_r11;
 ulong g_saved_parent_user_rsp;
 ulong[12] g_parent_resume_regs;  // {a1..a6, rbx,rbp,r12..r15} frozen at fork() time
 
+// ---- nil/errno constants used by the socket layer ----
+
 // Mask (on) or restore (off) the 8259 PIC IRQ lines. While a Linux ring-3
 // process runs we keep every device IRQ masked so the PIT/keyboard/mouse
 // cannot clobber a ring-0/3 transition (QEMU's iretq is fragile when an IRQ
@@ -99,6 +101,8 @@ const long ENOTTY = 25;
 const long ENOSYS = 38;
 const long EMFILE = 24;
 const long EPIPE  = 32;
+const long EAGAIN = 11;
+const long ECONNREFUSED = 111;
 
 fn uint rd_u16(char* b, uint off) { return (uint)((char)b[off]) | ((uint)((char)b[off+1]) << 8); }
 fn uint rd_u32(char* b, uint off)
@@ -139,13 +143,14 @@ const int MAX_FDS = 32;
 const uint FD_NONE = 0;
 const uint FD_FILE = 1;
 const uint FD_SOCK = 2;    // in-kernel byte-stream socket (AF_UNIX SOCK_STREAM)
-struct LxFD { bool used; uint type; ulong buf; ulong cap; ulong len; ulong pos; int peer; }
+struct LxFD { bool used; uint type; ulong buf; ulong cap; ulong len; ulong pos; int peer;
+              bool listener; char[24] spath; int[4] pending; uint pn; }
 LxFD[MAX_FDS] g_fd;
 LxFD[MAX_FDS] g_saved_parent_fds;   // snapshot taken at fork() to restore the parent
 
 fn void linux_fd_init()
 {
-    for (int i = 0; i < MAX_FDS; i++) { g_fd[i].used = false; g_fd[i].type = FD_NONE; g_fd[i].buf = 0; g_fd[i].cap = 0; g_fd[i].len = 0; g_fd[i].pos = 0; g_fd[i].peer = -1; }
+    for (int i = 0; i < MAX_FDS; i++) { g_fd[i].used = false; g_fd[i].type = FD_NONE; g_fd[i].buf = 0; g_fd[i].cap = 0; g_fd[i].len = 0; g_fd[i].pos = 0; g_fd[i].peer = -1; g_fd[i].listener = false; g_fd[i].pn = 0; g_fd[i].spath[0] = 0; }
     g_fd[0].used = true; g_fd[0].type = FD_FILE;   // stdin
     g_fd[1].used = true; g_fd[1].type = FD_FILE;   // stdout
     g_fd[2].used = true; g_fd[2].type = FD_FILE;   // stderr
@@ -201,8 +206,8 @@ fn long lx_sockpair(ulong* a)
     char* b1 = (char*)kmalloc(4096);
     char* b2 = (char*)kmalloc(4096);
     if (b1 == null || b2 == null) { if (b1 != null) kfree((void*)b1); if (b2 != null) kfree((void*)b2); return (long)(-ENOMEM); }
-    g_fd[f1].used = true; g_fd[f1].type = FD_SOCK; g_fd[f1].buf = (ulong)b1; g_fd[f1].cap = 4096; g_fd[f1].len = 0; g_fd[f1].pos = 0; g_fd[f1].peer = f2;
-    g_fd[f2].used = true; g_fd[f2].type = FD_SOCK; g_fd[f2].buf = (ulong)b2; g_fd[f2].cap = 4096; g_fd[f2].len = 0; g_fd[f2].pos = 0; g_fd[f2].peer = f1;
+    g_fd[f1].used = true; g_fd[f1].type = FD_SOCK; g_fd[f1].buf = (ulong)b1; g_fd[f1].cap = 4096; g_fd[f1].len = 0; g_fd[f1].pos = 0; g_fd[f1].peer = f2; g_fd[f1].listener = false; g_fd[f1].pn = 0; g_fd[f1].spath[0] = 0;
+    g_fd[f2].used = true; g_fd[f2].type = FD_SOCK; g_fd[f2].buf = (ulong)b2; g_fd[f2].cap = 4096; g_fd[f2].len = 0; g_fd[f2].pos = 0; g_fd[f2].peer = f1; g_fd[f2].listener = false; g_fd[f2].pn = 0; g_fd[f2].spath[0] = 0;
     ulong sv = a[3];
     if (sv != 0)
     {
@@ -214,6 +219,120 @@ fn long lx_sockpair(ulong* a)
     xk_puts("[sock] socketpair(AF_UNIX) -> fds ");
     xk_putdec(f1); xk_puts(" "); xk_putdec(f2); xk_puts("\r\n");
     return 0;
+}
+
+// ---- AF_UNIX named server sockets (Phase A.4): the Wayland display-socket model ----
+// A process can socket()/bind()/listen() on a pathname (e.g. /run/wayland-0), then
+// clients socket()/connect() to it, and accept() a fresh endpoint per connection.
+// The accepted fd and the connecting client fd are a linked pair (like socketpair),
+// so the existing peer-based read/write works unchanged. Testable single-process by
+// listening and connecting to yourself.
+
+// Copy the path from a user sockaddr_un {ushort family; char sun_path[108]} into out.
+// Returns false unless the family is AF_UNIX(1).
+fn bool sockaddr_un_path(ulong sa, char* out, uint max)
+{
+    char* p = (char*)(ulong)sa;
+    uint fam = (uint)(((char*)p)[0]) | ((uint)(((char*)p)[1]) << 8);
+    if (fam != 1) return false;
+    uint i = 0;
+    while (i < max - 1)
+    {
+        char c = ((char*)(ulong)sa)[2 + i];
+        out[i] = c;
+        if (c == 0) return true;
+        i++;
+    }
+    out[i] = 0;
+    return true;
+}
+
+fn bool sock_fd(long fd)
+{
+    return fd >= 0 && fd < MAX_FDS && g_fd[(int)fd].used && g_fd[(int)fd].type == FD_SOCK;
+}
+
+fn bool sock_path_eq(char* a, char* b)
+{
+    int i = 0;
+    while (a[i] != 0 && b[i] != 0) { if (a[i] != b[i]) return false; i++; }
+    return a[i] == b[i];
+}
+
+// socket(domain, type, protocol) -- nr 41
+fn long lx_socket(ulong* a)
+{
+    if ((long)a[0] != 1) return (long)(-EINVAL);     // AF_UNIX only
+    int fdi = -1;
+    for (int i = 3; i < MAX_FDS; i++) { if (!g_fd[i].used) { fdi = i; break; } }
+    if (fdi < 0) return (long)(-EMFILE);
+    g_fd[fdi].used = true; g_fd[fdi].type = FD_SOCK; g_fd[fdi].buf = 0; g_fd[fdi].cap = 0;
+    g_fd[fdi].len = 0; g_fd[fdi].pos = 0; g_fd[fdi].peer = -1; g_fd[fdi].listener = false;
+    g_fd[fdi].pn = 0; g_fd[fdi].spath[0] = 0;
+    return (long)fdi;
+}
+
+// bind(fd, sockaddr_un*, addrlen) -- nr 49
+fn long lx_bind(ulong* a)
+{
+    long fd = (long)a[0];
+    if (!sock_fd(fd)) return (long)(-EBADF);
+    if (!sockaddr_un_path(a[1], &g_fd[(int)fd].spath[0], 24)) return (long)(-EINVAL);
+    g_fd[(int)fd].listener = true;                  // bound; becomes a listen candidate
+    return 0;
+}
+
+// listen(fd, backlog) -- nr 50
+fn long lx_listen(ulong* a)
+{
+    long fd = (long)a[0];
+    if (!sock_fd(fd)) return (long)(-EBADF);
+    g_fd[(int)fd].listener = true;
+    return 0;
+}
+
+// connect(fd, sockaddr_un*, addrlen) -- nr 42
+fn long lx_connect(ulong* a)
+{
+    long cfd = (long)a[0];
+    if (!sock_fd(cfd)) return (long)(-EBADF);
+    char[24] p;                                  // filled by sockaddr_un_path()
+    if (!sockaddr_un_path(a[1], &p[0], 24)) return (long)(-EINVAL);
+    // find a listener bound to the same path
+    int srv = -1;
+    for (int i = 3; i < MAX_FDS; i++)
+    {
+        if (g_fd[i].used && g_fd[i].type == FD_SOCK && g_fd[i].listener && sock_path_eq(&g_fd[i].spath[0], &p[0])) { srv = i; break; }
+    }
+    if (srv < 0) return (long)(-ECONNREFUSED);
+    if (g_fd[srv].pn >= 4) return (long)(-EMFILE);
+    // allocate the server-side endpoint E and buffers for both ends
+    int e = -1;
+    for (int i = 3; i < MAX_FDS; i++) { if (!g_fd[i].used) { e = i; break; } }
+    if (e < 0) return (long)(-EMFILE);
+    char* b1 = (char*)kmalloc(4096);
+    char* b2 = (char*)kmalloc(4096);
+    if (b1 == null || b2 == null) { if (b1 != null) kfree((void*)b1); if (b2 != null) kfree((void*)b2); return (long)(-ENOMEM); }
+    // the connecting client fd becomes connected, its peer is the server endpoint E
+    g_fd[(int)cfd].buf = (ulong)b1; g_fd[(int)cfd].cap = 4096; g_fd[(int)cfd].len = 0;
+    g_fd[(int)cfd].pos = 0; g_fd[(int)cfd].peer = e; g_fd[(int)cfd].listener = false;
+    g_fd[e].used = true; g_fd[e].type = FD_SOCK; g_fd[e].buf = (ulong)b2; g_fd[e].cap = 4096;
+    g_fd[e].len = 0; g_fd[e].pos = 0; g_fd[e].peer = (int)cfd; g_fd[e].listener = false;
+    g_fd[e].pn = 0; g_fd[e].spath[0] = 0;
+    g_fd[srv].pending[g_fd[srv].pn++] = e;          // E waits in the listener's accept queue
+    return 0;
+}
+
+// accept(fd, sockaddr*, *addrlen) -- nr 43 (non-blocking for now)
+fn long lx_accept(ulong* a)
+{
+    long fd = (long)a[0];
+    if (!sock_fd(fd)) return (long)(-EBADF);
+    if (g_fd[(int)fd].pn == 0) return (long)(-EAGAIN);
+    int e = g_fd[(int)fd].pending[0];
+    for (uint i = 1; i < g_fd[(int)fd].pn; i++) { g_fd[(int)fd].pending[i - 1] = g_fd[(int)fd].pending[i]; }
+    g_fd[(int)fd].pn--;
+    return (long)e;
 }
 
 fn long lx_do_open(char* path, long flags)
@@ -236,6 +355,8 @@ fn long lx_do_open(char* path, long flags)
     g_fd[fdi].len = (ulong)outlen;
     g_fd[fdi].pos = 0;
     g_fd[fdi].peer = -1;
+    g_fd[fdi].listener = false;
+    g_fd[fdi].pn = 0;
     return (long)fdi;
 }
 
@@ -259,6 +380,9 @@ fn long lx_do_close(long fd)
     g_fd[fd].len = 0;
     g_fd[fd].pos = 0;
     g_fd[fd].peer = -1;
+    g_fd[fd].listener = false;
+    g_fd[fd].pn = 0;
+    g_fd[fd].spath[0] = 0;
     return 0;
 }
 
@@ -674,8 +798,13 @@ fn ulong xk_linux_dispatch(ulong nr, ulong* a) @export("xk_linux_dispatch")
     else if (nr == 57) { return (ulong)lx_fork(a); }                           // fork
     else if (nr == 61) { return (ulong)lx_wait4(a); }                          // wait4
     else if (nr == 53) { return (ulong)lx_sockpair(a); }                       // socketpair (AF_UNIX)
+    else if (nr == 41) { return (ulong)lx_socket(a); }                          // socket
+    else if (nr == 49) { return (ulong)lx_bind(a); }                            // bind
+    else if (nr == 50) { return (ulong)lx_listen(a); }                          // listen
+    else if (nr == 42) { return (ulong)lx_connect(a); }                         // connect
+    else if (nr == 43) { return (ulong)lx_accept(a); }                          // accept
     else if (nr == 56 || nr == 58) { return (ulong)(-ENOSYS); }  // clone/vfork (threads: later)
-    else if (nr == 41 || nr == 42 || nr == 49 || nr == 45 || nr == 44 || nr == 46 || nr == 50 || nr == 54) { return (ulong)(-ENOSYS); } // sockets
+    else if (nr == 45 || nr == 44 || nr == 46 || nr == 54) { return (ulong)(-ENOSYS); } // sockets (sendmsg/recvmsg/etc)
     // Unknown syscall: print which one, then ENOSYS (keeps musl's failure visible).
     xk_puts("[linux] unimplemented syscall nr=");
     xk_putdec((int)nr);
