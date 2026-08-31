@@ -36,6 +36,7 @@ const ulong LX_MMAP_END   = 0x0FC00000;   // arena end (252 MiB)
 ulong g_linux_pml4;                       // this process's CR3
 ulong g_user_brk;                         // program break (brk)
 ulong g_mmap_cur = LX_MMAP_BASE;          // next anonymous mmap address
+bool[256] g_shared_slot;                   // user-arena 2 MiB slots marked MAP_SHARED
 ulong g_linux_pid = 1;
 ulong g_tid_addr = 0;
 // ---- fork() state (Phase A.2: synchronous child-first fork) ----
@@ -756,11 +757,20 @@ fn long lx_do_brk(ulong addr)
     return (long)g_user_brk;
 }
 
-fn long lx_do_mmap(ulong len)
+fn long lx_do_mmap(ulong len, ulong flags)
 {
     ulong want = (len + 4095) & ~((ulong)4095);
     if (want == 0) want = 4096;
-    if (g_mmap_cur + want > LX_MMAP_END) return -ENOMEM;
+    if (flags & 0x1ul)              // MAP_SHARED: a dedicated shared 2 MiB slot
+    {
+        ulong v = (g_mmap_cur + 0x1FFFFFul) & ~(ulong)0x1FFFFF;
+        if (v + 0x200000ul > LX_MMAP_END) return (long)(-ENOMEM);
+        g_mmap_cur = v + 0x200000ul;
+        mark_user_pde(g_linux_pml4, v);
+        g_shared_slot[(v >> 21) & 0xFF] = true;   // fork maps this slot shared, no copy
+        return (long)v;
+    }
+    if (g_mmap_cur + want > LX_MMAP_END) return (long)(-ENOMEM);
     ulong v = g_mmap_cur;
     g_mmap_cur += want;
     for (ulong pg = v & ~(ulong)0x1FFFFF; pg <= (v + want) & ~(ulong)0x1FFFFF; pg += (ulong)0x200000)
@@ -794,6 +804,17 @@ fn bool xk_copy_slot(ulong dst_pml4, ulong src_pml4, ulong slot)
     ulong ent = xk_walk_pde(src_pml4, slot);
     if ((ent & 1) == 0) return true;          // not present: nothing to copy
     if ((ent & 0x4) == 0) return true;        // not a USER page: keep dst identity
+    if (g_shared_slot[(slot >> 21) & 0xFF])
+    {
+        // MAP_SHARED slot: point the child at the SAME 2 MiB superpage (no copy)
+        // so both processes share physical memory (wl_shm / fb handoff foundation).
+        ulong dpdp = *(ulong*)dst_pml4 & 0xFFFFF000ul;
+        int dpdxx = (int)((slot >> 30) & 0x1FF);
+        ulong dpd  = *(ulong*)(dpdp + (ulong)dpdxx * 8) & 0xFFFFF000ul;
+        int dpde  = (int)((slot >> 21) & 0x1FF);
+        *(uint*)(dpd + (ulong)dpde * 8) = (uint)slot | 0x87ul;   // present|rw|user|PS
+        return true;
+    }
     ulong pt = frame_alloc();
     if (pt == 0) return false;
     kmemzero((void*)pt, 4096);                // fresh PTE table
@@ -1183,7 +1204,7 @@ fn ulong xk_linux_dispatch(ulong nr, ulong* a) @export("xk_linux_dispatch")
     else if (nr == 39)      { return g_linux_pid; }
     else if (nr == 218)     { g_tid_addr = a[0]; return g_linux_pid; }
     else if (nr == 16)      { return (ulong)lx_ioctl(a); }         // ioctl
-    else if (nr == 9)       { return (ulong)lx_do_mmap(a[1]); }     // mmap (anonymous)
+    else if (nr == 9)       { return (ulong)lx_do_mmap(a[1], a[3]); } // mmap (anon; MAP_SHARED/PRIVATE)
     else if (nr == 11)      { return 0; }                           // munmap
     else if (nr == 10)      { return 0; }                           // mprotect
     else if (nr == 158)     // arch_prctl (TLS FS/GS base)
