@@ -222,6 +222,88 @@ const ulong ARCH_GET_FS = 0x1003;
 const ulong ARCH_GET_GS = 0x1004;
 const ulong TIOCGWINSZ  = 0x5413;
 
+// ---- additional POSIX syscall helpers ----
+
+// Size (or presence) of a file on the FAT volume; returns true + size for a
+// regular file, false if absent. Names match the same prefix logic as open().
+fn bool lx_fat_find(char* path, ulong* size_out, bool* is_dir_out)
+{
+    char* p = path;
+    int g = 0;
+    while ((char)p[0] == '/' && g < 32) { p++; g++; }
+    if (p[0] == 0) { *is_dir_out = true; *size_out = 0; return true; }  // "/" is the root dir
+    char[FAT_SECTOR] sec;
+    for (uint r = 0; r < FAT_ROOT_SECTORS; r++)
+    {
+        if (ata_read_sectors(FAT_BASE, FAT_DRIVE, (ulong)FAT_ROOT_START + (ulong)r, 1, &sec[0]) != 0) return false;
+        for (int e = 0; e < 16; e++)
+        {
+            char* en = &sec[e * 32];
+            if ((int)((char)en[0]) == 0) return false;
+            if ((int)((char)en[0]) == 0xE5) continue;
+            if (((int)((char)en[11]) & 0x08) != 0) continue;
+            if (fatname_match(&en[0], p))
+            {
+                *is_dir_out = false;
+                *size_out = (ulong)((int)((char)en[28]) & 0xFF) | ((ulong)((int)((char)en[29]) & 0xFF) << 8)
+                          | ((ulong)((int)((char)en[30]) & 0xFF) << 16) | ((ulong)((int)((char)en[31]) & 0xFF) << 24);
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Fill the x86-64 kernel 'struct stat' enough for POSIX programs (mode/size/ino...).
+fn void lx_stat_fill(char* sb, uint mode, ulong size, bool is_dir)
+{
+    ulong full = is_dir ? (mode | 0x41EDu) : (mode | 0x81A4u);   // S_IFDIR|0755 or S_IFREG|0644
+    ulong a = (ulong)sb;
+    for (int i = 0; i < 144; i++) { ((char*)a)[i] = 0; }
+    st8(a, 1);              // st_dev
+    st8(a + 8, 1);          // st_ino
+    st8(a + 16, 1);         // st_nlink
+    for (int k = 0; k < 4; k++) { ((char*)a)[24 + k] = (char)((full >> (k * 8)) & 0xFF); }   // st_mode
+    st8(a + 48, size);      // st_size
+    st8(a + 56, 4096);      // st_blksize
+    st8(a + 64, (size + 511) / 512);   // st_blocks
+    ulong t = xk_get_ticks() / 100;
+    st8(a + 72, t); st8(a + 88, t); st8(a + 104, t);   // atime/mtime/ctime sec
+}
+
+fn long lx_stat_path(char* path, char* sb)
+{
+    ulong size = 0;
+    bool isdir = false;
+    if (!lx_fat_find(path, &size, &isdir)) return -ENOENT;
+    lx_stat_fill(sb, 0, size, isdir);
+    return 0;
+}
+
+fn long lx_stat_fd(long fd, char* sb)
+{
+    if (fd < 0 || fd >= MAX_FDS || !g_fd[fd].used) return -EBADF;
+    lx_stat_fill(sb, 0, g_fd[fd].len, false);
+    return 0;
+}
+
+fn long lx_uname(char* buf)
+{
+    char* sys_  = "xenOS";
+    char* node_ = "xen";
+    char* rel_  = "0.1.0";
+    char* vers_ = "#1 musl-linux-dyn";
+    char* mach_ = "x86_64";
+    // struct utsname: sysname[65], nodename[65], release[65], version[65], machine[65], domainname[65]
+    for (int i = 0; i < 390; i++) { buf[i] = 0; }
+    int k = 0; while (sys_[k]) { buf[k] = sys_[k]; k++; }
+    k = 0; while (node_[k]) { buf[65 + k] = node_[k]; k++; }
+    k = 0; while (rel_[k]) { buf[130 + k] = rel_[k]; k++; }
+    k = 0; while (vers_[k]) { buf[195 + k] = vers_[k]; k++; }
+    k = 0; while (mach_[k]) { buf[260 + k] = mach_[k]; k++; }
+    return 0;
+}
+
 // ---- the Linux syscall dispatcher (called by syscall_entry in asm) ----
 //   ulong xk_linux_dispatch(ulong nr, ulong* a)  -- a[0..5] = a1..a6 (sysV)
 // A negative return is a Linux errno (musl negates it into errno). exit_group
@@ -280,8 +362,70 @@ fn ulong xk_linux_dispatch(ulong nr, ulong* a) @export("xk_linux_dispatch")
         if (a[0] != 0) { ((ulong*)a[0])[0] = tt / 100; }
         return tt / 100;
     }
-    else if (nr == 14 || nr == 97 || nr == 15 || nr == 13) { return 0; } // rt_sig/signal stubs
-    else if (nr == 5)       { return 0; }  // fstat (stub)
+    else if (nr == 13 || nr == 14 || nr == 15) { return 0; }  // rt_sigaction/procmask/return stubs
+    // stat-family: musl routes stat through fstatat with an on-stack temp that
+    // it copy-backs; our kernel-side fill doesn't round-trip correctly, so fail
+    // cleanly (ENOSYS) rather than hand back corrupt st_size/st_mode.
+    else if (nr == 4 || nr == 6 || nr == 5 || nr == 262 || nr == 292) { return (ulong)(-ENOSYS); }
+    else if (nr == 79)     // getcwd
+    {
+        ((char*)(ulong)a[0])[0] = '/';
+        ((char*)(ulong)a[0])[1] = 0;
+        return (ulong)a[0];
+    }
+    else if (nr == 63)     { return (ulong)lx_uname((char*)(ulong)a[0]); }   // uname
+    else if (nr == 102 || nr == 107) { return 1000; }                        // getuid/geteuid
+    else if (nr == 104 || nr == 108) { return 1000; }                        // getgid/getegid
+    else if (nr == 110)    { return 2; }                                     // getppid
+    else if (nr == 186)    { return g_linux_pid; }                           // gettid
+    else if (nr == 111 || nr == 121) { return g_linux_pid; }                 // getpgrp/getpgid
+    else if (nr == 21)     // access
+    {
+        ulong s; bool d;
+        return (ulong)(lx_fat_find((char*)(ulong)a[0], &s, &d) ? 0 : -ENOENT);
+    }
+    else if (nr == 89 || nr == 267) { return (ulong)(-ENOENT); }             // readlink/readlinkat
+    else if (nr == 35)     { return 0; }                                     // nanosleep
+    else if (nr == 202)    { return 0; }                                     // futex
+    else if (nr == 62 || nr == 234) { return 0; }                            // kill/tgkill
+    else if (nr == 72)     { return 0; }                                     // fcntl
+    else if (nr == 24)     { return 0; }                                     // sched_yield
+    else if (nr == 97)     // getrlimit
+    {
+        ulong l = a[1];
+        if (l != 0) { st8(l, (ulong)0xFFFFFFFF); st8(l + 8, (ulong)0xFFFFFFFF); }   // rlim_cur/rlim_max
+        return 0;
+    }
+    else if (nr == 302)    // prlimit64
+    {
+        ulong l = a[2];
+        if (l != 0) { st8(l, (ulong)0xFFFFFFFF); st8(l + 8, (ulong)0xFFFFFFFF); }
+        return 0;
+    }
+    else if (nr == 318)    // getrandom
+    {
+        ulong base = a[1];
+        for (ulong i = 0; i < 32 && i < a[2]; i++) { ((char*)(ulong)base)[i] = (char)((int)base + (int)i); }
+        return (long)(a[2] < 32 ? a[2] : 32);
+    }
+    else if (nr == 8)     // lseek
+    {
+        int fd = (int)a[0];
+        if (fd < 0 || fd >= MAX_FDS || !g_fd[fd].used) return (ulong)(-EBADF);
+        if (a[2] == 0) { g_fd[fd].pos = a[1]; }
+        else if (a[2] == 2) { g_fd[fd].pos = g_fd[fd].len + a[1]; }
+        else if (a[2] == 1) { g_fd[fd].pos = g_fd[fd].pos + a[1]; }
+        return (ulong)g_fd[fd].pos;
+    }
+    else if (nr == 32)     // dup
+    {
+        int src = (int)a[0];
+        if (src < 0 || src >= MAX_FDS || !g_fd[src].used) return (ulong)(-EBADF);
+        for (int i = 3; i < MAX_FDS; i++) { if (!g_fd[i].used) { g_fd[i] = g_fd[src]; return (ulong)i; } }
+        return (ulong)(-EMFILE);
+    }
+    else if (nr == 56 || nr == 57 || nr == 58) { return (ulong)(-ENOSYS); }  // clone/fork/vfork
+    else if (nr == 41 || nr == 42 || nr == 49 || nr == 45 || nr == 44 || nr == 46 || nr == 50 || nr == 54) { return (ulong)(-ENOSYS); } // sockets
     // Unknown syscall: print which one, then ENOSYS (keeps musl's failure visible).
     xk_puts("[linux] unimplemented syscall nr=");
     xk_putdec((int)nr);

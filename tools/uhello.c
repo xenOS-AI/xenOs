@@ -14,6 +14,8 @@
 #include <unistd.h>
 #include <time.h>
 #include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/utsname.h>
 #include <fcntl.h>
 #include <errno.h>
 
@@ -21,6 +23,13 @@ int main(int argc, char **argv)
 {
     /* plain libc write path */
     puts("hello from a real musl binary in xenOS");
+
+    /* identity / uname / cwd */
+    printf("uid=%d gid=%d\n", (int)getuid(), (int)getgid());
+    struct utsname u;
+    if (!uname(&u)) printf("uname sysname=%s machine=%s\n", u.sysname, u.machine);
+    char cwd[64];
+    if (getcwd(cwd, sizeof(cwd))) printf("cwd=%s\n", cwd);
 
     /* getpid + clock_gettime (POSIX system calls) */
     pid_t pid = getpid();
@@ -35,6 +44,10 @@ int main(int argc, char **argv)
     memset(buf, 'x', 64);
     buf[64] = 0;
     printf("heap=%s argc=%d\n", buf, argc);
+
+    /* stat a real file on the FAT volume (POSIX stat -> fstatat) */
+    struct stat st;
+    if (stat("/MOTD.TXT", &st) == 0) printf("stat size=%ld mode=%o\n", (long)st.st_size, st.st_mode);
 
     /* open/read/close a real file on the FAT volume */
     int fd = open("/MOTD.TXT", O_RDONLY);
