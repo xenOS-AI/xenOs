@@ -320,6 +320,68 @@ xk_enter_ring3:
     iretq
     hlt                   ; never reached
 
+; void xk_user_return(ulong rax_val, ulong entry, ulong user_rsp, ulong rflags)
+; iretq to ring-3 `entry` with `rax_val` placed in rax (rax is SET, not restored).
+; Same proven mechanism as xk_enter_ring3, but lets the caller choose what the
+; resumed userland sees in rax and rflags. Used by fork() to resume the child with
+; eax=0 and the parent with eax=child_pid at the exact syscall return point.
+global xk_user_return
+xk_user_return:
+    mov rax, rdi          ; rax_val (userland EAX)
+    mov r9,  rsi          ; entry (rip)
+    mov r10, rdx          ; user_rsp
+    push 0x33             ; SS -- deepest
+    push r10
+    push rcx              ; RFLAGS
+    push 0x2B
+    push r9               ; RIP -- top
+    ; Restore the FULL preserved set (Linux ABI: everything except rax/rcx/r11
+    ; survives syscall) from the block selected by g_resume_regs. rax must stay =
+    ; rax_val; r11 is the only scratch left (rflags are restored from the frame).
+    mov r11, [rel g_resume_regs]
+    mov rdi, [r11 + 0]
+    mov rsi, [r11 + 8]
+    mov rdx, [r11 + 16]
+    mov r10, [r11 + 24]
+    mov r8,  [r11 + 32]
+    mov r9,  [r11 + 40]
+    mov rbx, [r11 + 48]
+    mov rbp, [r11 + 56]
+    mov r12, [r11 + 64]
+    mov r13, [r11 + 72]
+    mov r14, [r11 + 80]
+    mov r15, [r11 + 88]
+    iretq
+    hlt                   ; never reached
+
+; ulong xk_get_user_rsp(void)
+; Returns the user RSP saved at the current syscall entry (before the kernel stack
+; switch). Needed by fork to resume either party on the right user stack.
+global xk_get_user_rsp
+xk_get_user_rsp:
+    mov rax, [rel xk_syscall_user_rsp]
+    ret
+
+; ulong* xk_get_resume_snapshot(void) -- pointer to the live 12-qword entry snapshot
+; {a1..a6, cbx,cbp,c12,c13,c14,c15} captured at syscall_entry. Used by fork() to
+; freeze the parent's full preserved register set before the child runs.
+global xk_get_resume_snapshot
+xk_get_resume_snapshot:
+    lea rax, [rel ss_a1]
+    ret
+
+; void xk_set_resume_block(ulong* p) -- select the 12-qword block xk_user_return
+; restores from (Linux ABI: preserve every GPR except rax/rcx/r11). Lets the fork
+; parent resume with ITS OWN registers -- the child's syscalls overwrite ss_*.
+global xk_set_resume_block
+xk_set_resume_block:
+    mov [rel g_resume_regs], rdi
+    ret
+section .data
+global g_resume_regs
+g_resume_regs: dq 0
+section .text
+
 ; Flush the entire TLB by reloading CR3.
 global xk_reload_cr3
 xk_reload_cr3:
@@ -369,12 +431,52 @@ section .data
 align 16
 global xk_syscall_user_rsp
 xk_syscall_user_rsp: dq 0
+; Reserved register snapshot captured at syscall_entry, laid out so
+; xk_get_resume_snapshot()/xk_user_return() can address all 12 as a single
+; contiguous {a1..a6, cbx,cbp,c12..c15} 96-byte region (Linux ABI: every GPR
+; except rax/rcx/r11 survives syscall).
+ss_a1: dq 0
+ss_a2: dq 0
+ss_a3: dq 0
+ss_a4: dq 0
+ss_a5: dq 0
+ss_a6: dq 0
+global ss_cbx
+global ss_cbp
+global ss_c12
+global ss_c13
+global ss_c14
+global ss_c15
+ss_cbx: dq 0
+ss_cbp: dq 0
+ss_c12: dq 0
+ss_c13: dq 0
+ss_c14: dq 0
+ss_c15: dq 0
 section .text
 
 global syscall_entry
 syscall_entry:
     mov [rel xk_syscall_user_rsp], rsp    ; stash the user stack
     lea rsp, [rel syscall_kstack_top]     ; switch to the kernel syscall stack
+    ; Preserve the user's callee-saved registers across the kernel call. Linux
+    ; ABI: syscall must return them unchanged. musl's fork() (and any libc fn with
+    ; live locals in rbx/rbp/r12-r15 across the call) breaks otherwise -- the
+    ; resumed party NULL-deref's. These are re-read by both the syscall tail and
+    ; xk_user_return so the fork parent/child resume with the caller's regs.
+    mov [rel ss_cbx], rbx
+    mov [rel ss_cbp], rbp
+    mov [rel ss_c12], r12
+    mov [rel ss_c13], r13
+    mov [rel ss_c14], r14
+    mov [rel ss_c15], r15
+    ; Also snapshot a1..a6 -- the Linux ABI preserves the argument registers too.
+    mov [rel ss_a1], rdi
+    mov [rel ss_a2], rsi
+    mov [rel ss_a3], rdx
+    mov [rel ss_a4], r10
+    mov [rel ss_a5], r8
+    mov [rel ss_a6], r9
     push r11                              ; return RFLAGS (deepest)
     push rcx                              ; return RIP
     push r9                               ; a6
@@ -399,6 +501,14 @@ syscall_entry:
     pop r9                                ; a6
     pop rcx                               ; return RIP
     pop r11                               ; return RFLAGS
+    ; Restore the caller's callee-saved registers (captured at entry) so ring-3
+    ; sees syscall as ABI-correct for rbx/rbp/r12-r15.
+    mov rbx, [rel ss_cbx]
+    mov rbp, [rel ss_cbp]
+    mov r12, [rel ss_c12]
+    mov r13, [rel ss_c13]
+    mov r14, [rel ss_c14]
+    mov r15, [rel ss_c15]
     ; Return to ring 3 with a crafted iretq frame (same mechanism as
     ; xk_enter_ring3, proven reliable on QEMU). QEMU 11's `sysret` does not
     ; reliably land at RCX, so we avoid it.

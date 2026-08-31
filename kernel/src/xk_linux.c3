@@ -14,6 +14,13 @@ module xk;
 
 // ---- registers passed by the sysret ABI (from syscall_entry's saved block) ----
 extern fn void   xk_linux_syscall_init();
+// iretq to ring-3 with a chosen rax/rflags (fork parent/child resume), and the
+// user RSP captured at syscall entry.
+extern fn void   xk_user_return(ulong rax_val, ulong entry, ulong user_rsp, ulong rflags);
+extern fn ulong  xk_get_user_rsp();
+// callee-saved-register snapshot (rbx,rbp,r12..r15) captured at syscall entry
+extern fn ulong* xk_get_resume_snapshot();
+extern fn void   xk_set_resume_block(ulong* p);
 extern fn ulong  xk_rdmsr(uint msr);
 extern fn void   xk_wrmsr(uint msr, ulong value);
 // xk_set_cr3 / xk_read_cr3 / xk_enter_ring3 are declared in xk_umode.c3 (same module).
@@ -31,6 +38,23 @@ ulong g_user_brk;                         // program break (brk)
 ulong g_mmap_cur = LX_MMAP_BASE;          // next anonymous mmap address
 ulong g_linux_pid = 1;
 ulong g_tid_addr = 0;
+// ---- fork() state (Phase A.2: synchronous child-first fork) ----
+// The kernel services ONE ring-3 process at a time. fork() clones the current
+// process into a fresh, INDEPENDENT address space (distinct physical pages), runs
+// the child synchronously to its exit, then resumes the suspended parent at the
+// fork() return point with eax=child_pid. g_fork_pending selects which path an
+// exit_group takes. (True concurrent preemption is the follow-on (Phase A.1).)
+ulong g_next_pid_num  = 2;
+bool  g_fork_pending  = false;
+ulong g_fork_child_pid;
+ulong g_saved_parent_pml4;
+ulong g_saved_parent_brk;
+ulong g_saved_parent_mmap;
+ulong g_saved_parent_pid;
+ulong g_saved_parent_rcx;
+ulong g_saved_parent_r11;
+ulong g_saved_parent_user_rsp;
+ulong[12] g_parent_resume_regs;  // {a1..a6, rbx,rbp,r12..r15} frozen at fork() time
 
 // Mask (on) or restore (off) the 8259 PIC IRQ lines. While a Linux ring-3
 // process runs we keep every device IRQ masked so the PIT/keyboard/mouse
@@ -113,6 +137,7 @@ fn void st8(ulong a, ulong v)
 const int MAX_FDS = 32;
 struct LxFD { bool used; ulong buf; ulong len; ulong pos; }
 LxFD[MAX_FDS] g_fd;
+LxFD[MAX_FDS] g_saved_parent_fds;   // snapshot taken at fork() to restore the parent
 
 fn void linux_fd_init()
 {
@@ -216,6 +241,131 @@ fn long lx_do_mmap(ulong len)
     return (long)v;
 }
 
+// ---- Phase A.2: fork() -- clone into an independent address space ----
+// Read the value of the 2 MiB PDE covering `va` in a process CR3 (identity
+// hierarchy: pml4[0]->pdp->pd->pde). Returns the raw 64-bit PDE entry.
+fn ulong xk_walk_pde(ulong pml4, ulong va)
+{
+    ulong pdp = *(ulong*)pml4 & 0xFFFFF000ul;
+    int pdix = (int)((va >> 30) & 0x1FF);
+    ulong pd  = *(ulong*)(pdp + (ulong)pdix * 8) & 0xFFFFF000ul;
+    int pdi  = (int)((va >> 21) & 0x1FF);
+    return (ulong)(*(uint*)(pd + (ulong)pdi * 8));
+}
+
+// Give `dst` an INDEPENDENT copy of the user page `slot` (2 MiB-aligned) that
+// `src` maps. The child's fresh copy lives in newly allocated 4 KiB frames (the
+// child must NOT share physical pages with the parent, or the child's writes
+// would corrupt the parent's suspended view). The dst PDE for the slot is rebuilt
+// as a pointer to a 4 KiB PTE table (dropping the 2 MiB superpage). Only slots
+// present AND user-accessible in src are copied; kernel-owned slots keep dst's
+// default identity map. Returns false if frames run out.
+fn bool xk_copy_slot(ulong dst_pml4, ulong src_pml4, ulong slot)
+{
+    ulong ent = xk_walk_pde(src_pml4, slot);
+    if ((ent & 1) == 0) return true;          // not present: nothing to copy
+    if ((ent & 0x4) == 0) return true;        // not a USER page: keep dst identity
+    ulong pt = frame_alloc();
+    if (pt == 0) return false;
+    kmemzero((void*)pt, 4096);                // fresh PTE table
+    ulong dpdp = *(ulong*)dst_pml4 & 0xFFFFF000ul;
+    int dpdix = (int)((slot >> 30) & 0x1FF);
+    ulong dpd  = *(ulong*)(dpdp + (ulong)dpdix * 8) & 0xFFFFF000ul;
+    int dpde  = (int)((slot >> 21) & 0x1FF);
+    // Allocate 512 fresh 4 KiB frames and copy the source slot into them.
+    for (int i = 0; i < 512; i++)
+    {
+        ulong f = frame_alloc();
+        if (f == 0) return false;
+        ulong src_phys = slot + (ulong)i * 4096;    // parent's identity page
+        for (int k = 0; k < 4096; k++) { ((char*)f)[k] = ((char*)src_phys)[k]; }
+        st8(pt + (ulong)i * 8, (f & 0xFFFFF000ul) | 0x7ul);   // present|rw|user leaf
+    }
+    *(uint*)(dpd + (ulong)dpde * 8) = (uint)(pt & 0xFFFFF000) | 0x7;  // PDE -> PTE table
+    return true;
+}
+
+// Copy every user page in [LX_USER_START, LX_STACK_TOP) from `src` into `dst`.
+fn bool xk_copy_user_region(ulong dst_pml4, ulong src_pml4)
+{
+    for (ulong slot = LX_USER_START; slot < LX_STACK_TOP; slot += (ulong)0x200000)
+    {
+        if (!xk_copy_slot(dst_pml4, src_pml4, slot)) return false;
+    }
+    return true;
+}
+
+// fork(): the dispatcher's arg block is a1..a6 then the syscall-entry return
+// RIP (a[6]) and RFLAGS (a[7]); the user RSP is captured at entry. We snapshot
+// the parent's whole state, clone it into an independent address space, switch
+// to the child and enter it at the parent's return point with eax=0. The child
+// runs; its exit_group resumes the parent (eax=child_pid).
+fn long lx_fork(ulong* a)
+{
+    ulong rcx = a[6];
+    ulong r11 = a[7];
+    ulong user_rsp = xk_get_user_rsp();
+    g_saved_parent_pml4 = g_linux_pml4;
+    g_saved_parent_brk = g_user_brk;
+    g_saved_parent_mmap = g_mmap_cur;
+    g_saved_parent_pid = g_linux_pid;
+    for (int i = 0; i < MAX_FDS; i++) { g_saved_parent_fds[i] = g_fd[i]; }
+    g_saved_parent_rcx = rcx;
+    g_saved_parent_r11 = r11;
+    g_saved_parent_user_rsp = user_rsp;
+    // Freeze the parent's FULL preserved register set BEFORE the child runs (the
+    // Linux ABI preserves every GPR except rax/rcx/r11 across syscall, and the
+    // child's syscalls clobber the shared ss_* snapshot). Restored in
+    // lx_resume_parent (and used to enter the child with the parent's regs).
+    ulong* rsnap = xk_get_resume_snapshot();
+    for (int ri = 0; ri < 12; ri++) { g_parent_resume_regs[ri] = rsnap[ri]; }
+    ulong child_cr3 = create_process_addrspace(LX_USER_START);
+    if (child_cr3 == 0) { xk_puts("[fork] no frames for child address space\r\n"); return (long)(-ENOMEM); }
+    if (!xk_copy_user_region(child_cr3, g_linux_pml4))
+    {
+        xk_puts("[fork] ENOMEM copying user region\r\n");
+        return (long)(-ENOMEM);
+    }
+    ulong child_pid = g_next_pid_num++;
+    // globals now describe the CHILD (brk/mmap/fds inherited from the parent's live values)
+    g_linux_pml4 = child_cr3;
+    g_linux_pid = child_pid;
+    g_fork_child_pid = child_pid;
+    g_fork_pending = true;
+    xk_puts("[fork] pid="); xk_putdec((int)g_saved_parent_pid);
+    xk_puts(" fork -> child pid="); xk_putdec((int)child_pid); xk_puts("\r\n");
+    xk_set_resume_block(&g_parent_resume_regs[0]);
+    xk_set_cr3(child_cr3);
+    xk_user_return(0, rcx, user_rsp, r11);   // enter the CHILD at fork()'s return, eax=0
+    return (long)(-1);                       // unreached
+}
+
+// wait4(pid, *status, options, *rusage): simpler synchronous reap -- the child
+// has already fully run; return its pid with a zero status.
+fn long lx_wait4(ulong* a)
+{
+    ulong st = a[1];
+    if (st != 0) { for (int i = 0; i < 4; i++) { ((char*)st)[i] = 0; } }
+    return (long)g_fork_child_pid;
+}
+
+// Resume the suspended parent after the child has exited. Nothing returned.
+fn void lx_resume_parent()
+{
+    g_fork_pending = false;
+    g_linux_pml4 = g_saved_parent_pml4;
+    g_user_brk = g_saved_parent_brk;
+    g_mmap_cur = g_saved_parent_mmap;
+    g_linux_pid = g_saved_parent_pid;
+    for (int i = 0; i < MAX_FDS; i++) { g_fd[i] = g_saved_parent_fds[i]; }
+    // Select the block with the parent's OWN preserved registers and resume there.
+    xk_set_resume_block(&g_parent_resume_regs[0]);
+    xk_set_cr3(g_linux_pml4);
+    xk_puts("[fork] child exited; resuming parent pid=");
+    xk_putdec((int)g_saved_parent_pid); xk_puts("\r\n");
+    xk_user_return(g_fork_child_pid, g_saved_parent_rcx, g_saved_parent_user_rsp, g_saved_parent_r11);
+}
+
 const ulong ARCH_SET_GS = 0x1001;
 const ulong ARCH_SET_FS = 0x1002;
 const ulong ARCH_GET_FS = 0x1003;
@@ -310,6 +460,17 @@ fn long lx_uname(char* buf)
 // never returns (it resumes the desktop via umode_resume).
 fn ulong xk_linux_dispatch(ulong nr, ulong* a) @export("xk_linux_dispatch")
 {
+    // If this is the CHILD of a fork exiting, resume the suspended parent first:
+    // in the synchronous child-first fork model the child's exit_group is how
+    // control returns to the parent.
+    if ((nr == 60 || nr == 231) && g_fork_pending)
+    {
+        xk_puts("\r\n[linux] child process exited (code=");
+        xk_putdec((int)a[0]);
+        xk_puts(")\r\n");
+        lx_resume_parent();
+        return 0;                                    // unreached
+    }
     if (nr == 60 || nr == 231)                       // exit / exit_group
     {
         xk_puts("\r\n[linux] process exited (code=");
@@ -424,7 +585,9 @@ fn ulong xk_linux_dispatch(ulong nr, ulong* a) @export("xk_linux_dispatch")
         for (int i = 3; i < MAX_FDS; i++) { if (!g_fd[i].used) { g_fd[i] = g_fd[src]; return (ulong)i; } }
         return (ulong)(-EMFILE);
     }
-    else if (nr == 56 || nr == 57 || nr == 58) { return (ulong)(-ENOSYS); }  // clone/fork/vfork
+    else if (nr == 57) { return (ulong)lx_fork(a); }                           // fork
+    else if (nr == 61) { return (ulong)lx_wait4(a); }                          // wait4
+    else if (nr == 56 || nr == 58) { return (ulong)(-ENOSYS); }  // clone/vfork (threads: later)
     else if (nr == 41 || nr == 42 || nr == 49 || nr == 45 || nr == 44 || nr == 46 || nr == 50 || nr == 54) { return (ulong)(-ENOSYS); } // sockets
     // Unknown syscall: print which one, then ENOSYS (keeps musl's failure visible).
     xk_puts("[linux] unimplemented syscall nr=");
