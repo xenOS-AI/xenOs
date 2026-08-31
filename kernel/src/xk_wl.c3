@@ -13,7 +13,15 @@ const uint WLD_SYNC        = 0;   // wl_display.sync (new_id callback)
 const uint WLD_GET_REGISTRY= 1;   // wl_display.get_registry (new_id registry)
 const uint WLREG_BIND      = 0;   // wl_registry.bind
 const uint WLREG_GLOBAL    = 0;   // event
-struct WlConn { bool used; uint srvfd; uint clifd; uint robj; uint cbid; }
+// wl_compositor/wl_shm/wl_shm_pool/wl_surface requests:
+const uint WLC_SURFACE = 0;       // wl_compositor.create_surface
+const uint WLS_POOL    = 0;       // wl_shm.create_pool
+const uint WLP_BUFFER  = 0;       // wl_shm_pool.create_buffer
+const uint WLSURF_ATTACH = 1;     // wl_surface.attach
+const uint WLSURF_COMMIT = 6;     // wl_surface.commit
+struct WlConn { bool used; uint srvfd; uint clifd; uint robj; uint cbid;
+                uint shm_id, comp_id, surf_id, pool_id;
+                uint buf_base, bw, bh, bstride; bool attached; }
 WlConn[4] g_wl;
 uint g_wl_serial = 1;
 
@@ -78,30 +86,92 @@ fn void wl_register(uint srvfd, uint clifd)
     for (int i = 0; i < 4; i++) { if (!g_wl[i].used) { g_wl[i].used = true; g_wl[i].srvfd = srvfd; g_wl[i].clifd = clifd; g_wl[i].robj = 0; g_wl[i].cbid = 0; return; } }
 }
 
+// Read a Wayland wire string arg at ring offset `o` (u32 len + bytes + NUL pad);
+// returns the padded byte count consumed so the caller can locate the next arg.
+fn uint wl_str_len(SockState* s, ulong o)
+{
+    uint l = wl_rd32(s, o);
+    return 4 + ((l + 3u) & ~3u);      // u32 len + padded bytes
+}
+
+// Present the attached buffer to the primary framebuffer (Phase D).
+fn void wl_present(int wix)
+{
+    uint w = g_wl[wix].bw;
+    uint h = g_wl[wix].bh;
+    uint stride = g_wl[wix].bstride;
+    ulong base = g_wl[wix].buf_base;
+    if (w == 0 || h == 0 || base == 0) return;
+    uint fbw = (uint)g_fb_w;
+    uint fbh = (uint)g_fb_h;
+    uint cx = w < fbw ? w : fbw;
+    uint cy = h < fbh ? h : fbh;
+    char* fb = (char*)(ulong)0xFD000000ul;
+    for (uint yy = 0; yy < cy; yy++)
+    {
+        char* src = (char*)base + (ulong)yy * (ulong)stride;
+        char* dst = fb + (ulong)yy * (ulong)fbw * 4ul;
+        for (uint xx = 0; xx < cx * 4u; xx++) dst[xx] = src[xx];
+    }
+    xk_puts("[wl] PRESENTED "); xk_putdec((int)w); xk_puts("x"); xk_putdec((int)h);
+    xk_puts(" stride="); xk_putdec((int)stride); xk_puts(" @"); xk_puthex(base);
+    xk_puts(" -> framebuffer\n");
+}
+
 // Drain+answer one server connection (called from lx_sock_write after the client wrote).
 fn void wl_serve(int wix)
 {
     uint clifd = g_wl[wix].clifd;
     uint srvfd = g_wl[wix].srvfd;
     SockState* s = &g_sock[srvfd];
+    WlConn* c = &g_wl[wix];
     while (s.len >= 8)
     {
         uint obj = wl_rd32(s, 0);
         uint op  = wl_rd16(s, 4);
         uint ms  = wl_rd16(s, 6);
         if (ms < 8 || s.len < ms) break;
-        if (obj == 1u && op == WLD_GET_REGISTRY && ms >= 12)   // get_registry(new_id)
+        if (obj == 1u && op == WLD_GET_REGISTRY && ms >= 12)
         {
-            uint reg = wl_rd32(s, 8);
-            g_wl[wix].robj = reg;
-            wl_emit_global(clifd, reg, 1, "wl_compositor", 4);
-            wl_emit_global(clifd, reg, 2, "wl_shm", 1);
+            c.robj = wl_rd32(s, 8);
+            wl_emit_global(clifd, c.robj, 1, "wl_compositor", 4);
+            wl_emit_global(clifd, c.robj, 2, "wl_shm", 1);
         }
-        else if (obj == 1u && op == WLD_SYNC && ms >= 12)      // sync(new_id callback)
+        else if (obj == c.robj && obj >= 2u && op == WLREG_BIND && ms >= 24)
         {
-            uint cb = wl_rd32(s, 8);
-            g_wl[wix].cbid = cb;
-            wl_emit_cb_done(clifd, cb);
+            uint name = wl_rd32(s, 8);
+            uint ilen = wl_rd32(s, 12) & 0xFFu;
+            uint peek = wl_byte(s, 16);
+            uint impl = wl_byte(s, 16 + 1);
+            uint id = wl_rd32(s, (ulong)(12u + wl_str_len(s, 12) + 4u));   // name,str,version,new_id
+            if (name == 2u && peek == 'w' && impl == 'l') { c.shm_id = id; }
+                        else if (name == 1u && peek == 'w') { c.comp_id = id; }
+        }
+        else if (obj == c.comp_id && op == WLC_SURFACE && ms >= 12)
+        {
+            c.surf_id = wl_rd32(s, 8);
+        }
+        else if (obj == c.shm_id && op == WLS_POOL && ms >= 20)
+        {
+            c.pool_id = wl_rd32(s, 8);
+            c.buf_base = wl_rd32(s, 12);      // "fd" transport: the SHM pixel base (single-proc)
+            c.bw = 0; c.bh = 0;
+        }
+        else if (obj == c.pool_id && op == WLP_BUFFER && ms >= 32)
+        {
+            c.bw = wl_rd32(s, 16);
+            c.bh = wl_rd32(s, 20);
+            c.bstride = wl_rd32(s, 24);
+            c.buf_base += wl_rd32(s, 12);     // offset
+        }
+        else if (obj == c.surf_id && op == WLSURF_ATTACH && ms >= 20)
+        {
+            c.attached = true;
+        }
+        else if (obj == c.surf_id && op == WLSURF_COMMIT && ms >= 8)
+        {
+            if (c.attached) wl_present(wix);
+            c.attached = false;
         }
         wl_pop(s, ms);
     }
