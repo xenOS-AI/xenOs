@@ -312,7 +312,7 @@ fn ulong xk_linux_dispatch(ulong nr, ulong* a) @export("xk_linux_dispatch")
 {
     if (nr == 60 || nr == 231)                       // exit / exit_group
     {
-        xk_puts("\\r\\n[linux] process exited (code=");
+        xk_puts("\r\n[linux] process exited (code=");
         xk_putdec((int)a[0]);
         xk_puts(") > returning to xenOS desktop\\r\\n");
         umode_resume();
@@ -363,10 +363,10 @@ fn ulong xk_linux_dispatch(ulong nr, ulong* a) @export("xk_linux_dispatch")
         return tt / 100;
     }
     else if (nr == 13 || nr == 14 || nr == 15) { return 0; }  // rt_sigaction/procmask/return stubs
-    // stat-family: musl routes stat through fstatat with an on-stack temp that
-    // it copy-backs; our kernel-side fill doesn't round-trip correctly, so fail
-    // cleanly (ENOSYS) rather than hand back corrupt st_size/st_mode.
-    else if (nr == 4 || nr == 6 || nr == 5 || nr == 262 || nr == 292) { return (ulong)(-ENOSYS); }
+    else if (nr == 4)      { return (ulong)lx_stat_path((char*)(ulong)a[0], (char*)(ulong)a[1]); }   // stat
+    else if (nr == 6)      { return (ulong)lx_stat_path((char*)(ulong)a[0], (char*)(ulong)a[1]); }   // lstat
+    else if (nr == 5)      { return (ulong)lx_stat_fd((long)a[0], (char*)(ulong)a[1]); }              // fstat
+    else if (nr == 262)    { return (ulong)lx_stat_path((char*)(ulong)a[1], (char*)(ulong)a[2]); }    // newfstatat
     else if (nr == 79)     // getcwd
     {
         ((char*)(ulong)a[0])[0] = '/';

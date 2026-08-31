@@ -45,9 +45,13 @@ int main(int argc, char **argv)
     buf[64] = 0;
     printf("heap=%s argc=%d\n", buf, argc);
 
-    /* stat a real file on the FAT volume (POSIX stat -> fstatat) */
+    /* stat a real file on the FAT volume (POSIX stat -> fstatat -> kernel fills musl kstat) */
     struct stat st;
-    if (stat("/MOTD.TXT", &st) == 0) printf("stat size=%ld mode=%o\n", (long)st.st_size, st.st_mode);
+    if (stat("/MOTD.TXT", &st) == 0)
+        printf("stat dev=%lx ino=%lx nlink=%lu mode=%o size=%ld\n",
+               (unsigned long)st.st_dev, (unsigned long)st.st_ino,
+               (unsigned long)st.st_nlink, st.st_mode, (long)st.st_size);
+    else fprintf(stderr, "stat failed errno=%d\n", errno);
 
     /* open/read/close a real file on the FAT volume */
     int fd = open("/MOTD.TXT", O_RDONLY);

@@ -387,7 +387,16 @@ syscall_entry:
     mov rdi, rax                          ; arg1 = syscall number
     mov rsi, rsp                          ; arg2 = pointer to the arg block
     call xk_linux_dispatch                ; ulong xk_linux_dispatch(nr, ulong* a)
-    add rsp, 48                           ; pop a1..a6 (6*8)
+    ; Restore ALL caller registers. The Linux ABI preserves every GPR except
+    ; rax (return), rcx and r11 across `syscall`; musl relies on r8/r9/r10/rdx
+    ; surviving (e.g. fstatat caches &st in r8, then reads it after the syscall
+    ; to build the result). Discarding them corrupts such callers.
+    pop rdi                               ; a1
+    pop rsi                               ; a2
+    pop rdx                               ; a3
+    pop r10                               ; a4
+    pop r8                                ; a5
+    pop r9                                ; a6
     pop rcx                               ; return RIP
     pop r11                               ; return RFLAGS
     ; Return to ring 3 with a crafted iretq frame (same mechanism as
