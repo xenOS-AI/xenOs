@@ -156,6 +156,7 @@ xk_mmio_write32:
 ; xk_handle_isr(IntFrame*), restores, and iretq.
 ;==============================================================================
 extern xk_handle_isr
+extern xk_linux_dispatch
 
 %macro ISR_NOERR 1
 global isr_stub_%1
@@ -350,6 +351,111 @@ xk_set_ssdata:
     ret
 
 ;==============================================================================
+;==============================================================================
+; Linux syscall ABI entry point for the SYSCALL instruction (MSR LSTAR).
+; A ring-3 Linux userland binary does `syscall` with Linux syscall numbers.
+; On entry the CPU has: RAX=nr, RDI/RSI/RDX/R10/R8/R9=args, RCX=return RIP,
+; R11=return RFLAGS. SYSCALL does NOT switch the stack, so we save the user
+; RSP, switch to a dedicated kernel syscall stack, dispatch to the C handler
+; xk_linux_dispatch, then return via sysretq (which uses RCX/R11).
+;==============================================================================
+section .bss
+align 16
+syscall_kstack:
+    resb 16384
+global syscall_kstack_top
+syscall_kstack_top:
+section .data
+align 16
+global xk_syscall_user_rsp
+xk_syscall_user_rsp: dq 0
+section .text
+
+global syscall_entry
+syscall_entry:
+    mov [rel xk_syscall_user_rsp], rsp    ; stash the user stack
+    lea rsp, [rel syscall_kstack_top]     ; switch to the kernel syscall stack
+    push r11                              ; return RFLAGS (deepest)
+    push rcx                              ; return RIP
+    push r9                               ; a6
+    push r8                               ; a5
+    push r10                              ; a4
+    push rdx                              ; a3
+    push rsi                              ; a2
+    push rdi                              ; a1
+    ; rsp -> [a1][a2][a3][a4][a5][a6][rcx][r11]
+    mov rdi, rax                          ; arg1 = syscall number
+    mov rsi, rsp                          ; arg2 = pointer to the arg block
+    call xk_linux_dispatch                ; ulong xk_linux_dispatch(nr, ulong* a)
+    add rsp, 48                           ; pop a1..a6 (6*8)
+    pop rcx                               ; return RIP
+    pop r11                               ; return RFLAGS
+    ; Return to ring 3 with a crafted iretq frame (same mechanism as
+    ; xk_enter_ring3, proven reliable on QEMU). QEMU 11's `sysret` does not
+    ; reliably land at RCX, so we avoid it.
+    push 0x33                             ; SS  (user data, RPL3)
+    push qword [rel xk_syscall_user_rsp]  ; RSP (user stack)
+    push r11                              ; RFLAGS
+    push 0x2B                             ; CS  (user code, RPL3)
+    push rcx                              ; RIP
+    iretq
+    hlt
+
+; void xk_linux_syscall_init(void)
+; Program the MSRs so the SYSCALL/SYSRET pairing works from ring 3.
+;   EFER.SCE=1, STAR, LSTAR=syscall_entry, SFMASK=mask IF in kernel.
+; xenOS selectors: kernel code64=0x18, kernel data64=0x20,
+; user code64=0x28, user data64=0x30.
+global xk_linux_syscall_init
+xk_linux_syscall_init:
+    mov ecx, 0xC0000080                    ; EFER
+    rdmsr
+    or eax, 1                              ; SCE
+    wrmsr
+    mov ecx, 0xC0000081                    ; STAR
+    mov eax, 0x00000000
+    mov edx, 0x00180028                    ; [63:48]=kernel cs 0x18, [47:32]=user cs 0x28
+    wrmsr
+    mov ecx, 0xC0000082                    ; LSTAR
+    lea rax, [rel syscall_entry]
+    mov rdx, 0
+    wrmsr
+    mov ecx, 0xC0000084                    ; SFMASK
+    mov eax, 0x200                         ; mask IF while in the kernel
+    mov edx, 0
+    wrmsr
+    ret
+
+; ulong xk_rdmsr(uint msr)
+global xk_rdmsr
+xk_rdmsr:
+    mov ecx, edi
+    rdmsr
+    shl rdx, 32
+    or rax, rdx
+    ret
+
+; void xk_wrmsr(uint msr, ulong value)
+global xk_wrmsr
+xk_wrmsr:
+    mov ecx, edi
+    mov rax, rsi
+    mov rdx, rsi
+    shr rdx, 32
+    wrmsr
+    ret
+
+; void xk_enable_sse(void)
+; Let ring-3 Linux binaries use SSE/SSE2 (musl's stdio/memcpy rely on it).
+; Reset leaves CR4.OSFXSR=0, so every SSE instruction #UDs until the OS sets it.
+; Set CR4.OSFXSR (bit9) + OSXMMEXCPT (bit10). CR0 is left as the boot value.
+global xk_enable_sse
+xk_enable_sse:
+    mov rax, cr4
+    or  rax, ((1 << 9) | (1 << 10))   ; OSFXSR | OSXMMEXCPT
+    mov cr4, rax
+    ret
+
 ; Resume a task from its OWN real interrupt frame (created by isr_common on a
 ; genuine timer interrupt). This is exactly the tail of isr_common: load rsp
 ; to point at the frame's GPR region, pop the 15 GPRs, skip vector+error, then

@@ -115,6 +115,11 @@ fn int next_run()
 fn void sched_timer(IntFrame* f)
 {
     if (!g_preempt_ready) return;
+    // Only preempt from a clean ring-0 kernel frame. A frame whose CS is a user
+    // selector (0x2B) or a torn selectors value (e.g. 0x28 captured mid-iretq)
+    // must not be saved/resumed - resuming it #GPs. (The ring-3 Linux userland
+    // makes rapid ring-0/3 iretq transitions that can race the PIT capture.)
+    if (f.cs != 0x18) return;
     int nxt = next_run();
     if (nxt < 0 || nxt == g_current) return;
     int cur = g_current;

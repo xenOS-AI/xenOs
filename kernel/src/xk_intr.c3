@@ -107,9 +107,10 @@ fn void xk_fault(uint v, IntFrame* f)
         xk_puthex(f.rip);
         xk_puts(" cr2=");
         xk_puthex(xk_read_cr2());
+        xk_puts(" err=");
+        xk_puthex(f.error_code);
         xk_puts(" -> user program terminated by the kernel\r\n");
         umode_resume();          // never returns
-        return;
     }
     xk_puts("\r\n*** EXCEPTION vector=");
     xk_putdec((int)v);

@@ -141,7 +141,7 @@ fn ulong create_process_addrspace(ulong user_base)
 // Called once from boot; drops to ring 3 and does not return directly.
 fn void umode_enter()
 {
-    uprog_init();
+    user_prog_init();
     for (int i = 0; i < USER_PROG_LEN; i++)
     {
         ((char*)USER_BASE)[i] = user_prog[i];

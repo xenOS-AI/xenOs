@@ -13,6 +13,7 @@ extern fn void xk_lidt(ulong base, ushort limit);
 extern fn void xk_ltr(ushort selector);
 extern fn ulong xk_read_cr2();
 extern fn ulong xk_read_cr3();
+extern fn void xk_enable_sse();
 extern fn ulong xk_rdtsc();
 extern fn void xk_set_ssdata();
 
@@ -92,6 +93,7 @@ fn void xk_boot()
 {
     xk_serial_init();
     xk_puts("\r\n=== xenOS kernel 0.1 - hand-written in C3 ===\r\n");
+    xk_enable_sse();            // CR0/CR4: let ring-3 Linux binaries use SSE2
 
     BootInfo* bi = get_bootinfo();
     // adopt the screen geometry the bootloader negotiated (runtime resolution)
@@ -158,7 +160,8 @@ fn void xk_boot()
 
     xk_puts("[kernel] init ok. graphical desktop ready\r\n");
     umode_setup();
-    umode_enter();             // -> ring-3 demo; SYS_EXIT lands in umode_resume()
+    linux_boot_exec();       // load + run the bundled musl ELF (or the native demo)
+    // umode_enter();        // BASELINE carve
     while (true) { xk_hlt(); } // unreachable: ring-3 demo resumes the desktop
 }
 
