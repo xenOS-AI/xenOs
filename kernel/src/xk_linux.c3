@@ -442,6 +442,66 @@ fn long lx_getsockopt(ulong* a)
     return 0;
 }
 
+// ---- libwayland uses sendmsg/recvmsg (MSG_NOSIGNAL|MSG_DONTWAIT) for its socket
+//      I/O, NOT writev. These route the msghdr iovs to the socket layer. ----
+fn ulong lx_rd64(ulong p) { return (ulong)((char*)p)[0] | ((ulong)((char*)p)[1] << 8) | ((ulong)((char*)p)[2] << 16) | ((ulong)((char*)p)[3] << 24) | ((ulong)((char*)p)[4] << 32) | ((ulong)((char*)p)[5] << 40) | ((ulong)((char*)p)[6] << 48) | ((ulong)((char*)p)[7] << 56); }
+// sendmsg(fd, msghdr*, flags) -- nr 46
+fn long lx_sendmsg(ulong* a)
+{
+    long fd = (long)a[0];
+    if (!sock_fd(fd)) return (long)(-EBADF);
+    ulong mh = a[1];
+    ulong iov = lx_rd64(mh + 16);       // msg_iov
+    ulong iovlen = lx_rd64(mh + 24);    // msg_iovlen
+    long total = 0;
+    for (ulong i = 0; i < iovlen; i++)
+    {
+        ulong base = lx_rd64(iov + i * 16);
+        ulong l = lx_rd64(iov + i * 16 + 8);
+        if (l == 0) continue;
+        long w = lx_sock_write(fd, (char*)(ulong)base, l);   // incl. compositor answer (wl_serve_peer)
+        if (w < 0) return w;
+        total += w;
+    }
+    return total;
+}
+// recvmsg(fd, msghdr*, flags) -- nr 47 (fill msg_iov; no fd-passing yet)
+fn long lx_recvmsg(ulong* a)
+{
+    long fd = (long)a[0];
+    if (!sock_fd(fd)) return (long)(-EBADF);
+    ulong mh = a[1];
+    ulong iov = lx_rd64(mh + 16);
+    ulong iovlen = lx_rd64(mh + 24);
+    long total = 0;
+    for (ulong i = 0; i < iovlen; i++)
+    {
+        ulong base = lx_rd64(iov + i * 16);
+        ulong l = lx_rd64(iov + i * 16 + 8);
+        if (l == 0) continue;
+        long r = lx_sock_read(fd, (char*)(ulong)base, l);
+        if (r < 0) return r;
+        if (r == 0) break;
+        total += r;
+    }
+    ((char*)mh)[48] = (char)0; ((char*)mh)[49] = 0; ((char*)mh)[50] = 0; ((char*)mh)[51] = 0;   // msg_flags
+    return total;
+}
+// sendto(fd, buf, len, flags, ...) -- nr 44
+fn long lx_sendto(ulong* a)
+{
+    long fd = (long)a[0];
+    if (!sock_fd(fd)) return (long)(-EBADF);
+    return lx_sock_write(fd, (char*)(ulong)a[1], a[2]);
+}
+// recvfrom(fd, buf, len, ...) -- nr 45
+fn long lx_recvfrom(ulong* a)
+{
+    long fd = (long)a[0];
+    if (!sock_fd(fd)) return (long)(-EBADF);
+    return lx_sock_read(fd, (char*)(ulong)a[1], a[2]);
+}
+
 // ---- poll/ppoll (nr 7/271): event readability of the socket layer ----
 const ushort POLLIN  = 0x001;
 const ushort POLLOUT = 0x004;
@@ -1524,7 +1584,10 @@ fn ulong xk_linux_dispatch(ulong nr, ulong* a) @export("xk_linux_dispatch")
     else if (nr == 232) { return (ulong)lx_epoll_wait(a); }                    // epoll_wait
     else if (nr == 281) { return (ulong)lx_epoll_wait(a); }                      // epoll_pwait
     else if (nr == 56 || nr == 58) { return (ulong)(-ENOSYS); }  // clone/vfork (threads: later)
-    else if (nr == 45 || nr == 44 || nr == 46) { return (ulong)(-ENOSYS); } // sendmsg/recvmsg/etc
+    else if (nr == 44)      { return (ulong)lx_sendto(a); }                 // sendto
+    else if (nr == 45)      { return (ulong)lx_recvfrom(a); }             // recvfrom
+    else if (nr == 46)      { return (ulong)lx_sendmsg(a); }              // sendmsg (libwayland writes here)
+    else if (nr == 47)      { return (ulong)lx_recvmsg(a); }              // recvmsg (libwayland reads here)
     else if (nr == 54)      { return (ulong)lx_getsockopt(a); }            // getsockopt (libwayland SO_ERROR after nonblock connect)
     // Unknown syscall: print which one, then ENOSYS (keeps musl's failure visible).
     xk_puts("[linux] unimplemented syscall nr=");

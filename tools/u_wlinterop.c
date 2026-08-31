@@ -23,7 +23,7 @@ int main(void)
     struct wl_registry_listener li = { reg_handle, reg_done };
     wl_registry_add_listener(r, &li, NULL);
     int rc = wl_display_roundtrip(d);
-    printf("[wl] roundtrip rc=%d -> %s\n", rc, rc == 0 ? "INTEROP OK" : "FAIL");
+    printf("[wl] roundtrip rc=%d (%s)\n", rc, rc >= 0 ? "INTEROP OK" : "FAIL");
     wl_display_disconnect(d);
     printf("[wl] DONE\n");
     return 0;
