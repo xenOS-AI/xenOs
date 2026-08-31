@@ -59,7 +59,8 @@ fn void wl_emit(uint clifd, char* b, uint n)
 }
 fn void wl_emit_global(uint clifd, uint reg, uint name, char* iface, uint ver)
 {
-    uint ilen = 0; while (iface[ilen]) ilen++;
+    uint il = 0; while (iface[il]) il++;              // char count (without NUL)
+    uint ilen = il + 1u;                              // wire length INCLUDES the terminating NUL
     uint pad = (4u - (ilen % 4u)) % 4u;
     uint msz = 8 + 4 + 4 + ilen + pad + 4;
     char[64] b;
@@ -67,7 +68,8 @@ fn void wl_emit_global(uint clifd, uint reg, uint name, char* iface, uint ver)
     wl_u32(&b[0], 8, name);
     wl_u32(&b[0], 12, ilen);
     char* bp = &b[0];
-    for (uint k = 0; k < ilen; k++) bp[16 + k] = iface[k];
+    for (uint k = 0; k < il; k++) bp[16 + k] = iface[k];
+    bp[16 + il] = 0;                                   // NUL at index (ilen-1) -- libwayland requires it
     for (uint k = 0; k < pad; k++) bp[16 + ilen + k] = (char)0;
     wl_u32(&b[0], 16 + ilen + pad, ver);
     wl_emit(clifd, &b[0], msz);
@@ -180,12 +182,17 @@ fn void wl_serve(int wix)
         uint ms  = wl_rd16(s, 6);
         if (ms < 8 || s.len < ms) break;
         if (obj == 1u && op == WLD_GET_REGISTRY && ms >= 12)
-        {
-            c.robj = wl_rd32(s, 8);
-            wl_emit_global(clifd, c.robj, 1, "wl_compositor", 4);
-            wl_emit_global(clifd, c.robj, 2, "wl_shm", 1);
-            wl_emit_global(clifd, c.robj, 3, "wl_seat", 6);
-        }
+                {
+                    c.robj = wl_rd32(s, 8);
+                    wl_emit_global(clifd, c.robj, 1, "wl_compositor", 4);
+                    wl_emit_global(clifd, c.robj, 2, "wl_shm", 1);
+                    wl_emit_global(clifd, c.robj, 3, "wl_seat", 6);
+                }
+                else if (obj == 1u && op == WLD_SYNC && ms >= 12)      // wl_display.sync -> callback.done
+                {
+                    c.cbid = wl_rd32(s, 8);
+                    wl_emit_cb_done(clifd, c.cbid);
+                }
         else if (obj == c.robj && obj >= 2u && op == WLREG_BIND && ms >= 24)
         {
             uint name = wl_rd32(s, 8);
