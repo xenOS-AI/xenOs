@@ -335,6 +335,55 @@ fn long lx_accept(ulong* a)
     return (long)e;
 }
 
+// ---- poll/ppoll (nr 7/271): event readability of the socket layer ----
+const ushort POLLIN  = 0x001;
+const ushort POLLOUT = 0x004;
+const ushort POLLERR = 0x008;
+const ushort POLLHUP = 0x010;
+const ushort POLLNVAL= 0x020;
+
+fn bool sock_readable(LxFD* s)
+{
+    return s.len > 0 || (s.listener && s.pn > 0);   // data waiting, or a pending accept
+}
+fn bool sock_writable(LxFD* s)
+{
+    return s.peer >= 0 && s.peer < MAX_FDS && g_fd[s.peer].used;   // peer still open
+}
+
+// poll(struct pollfd *fds, nfds, timeout_ms). Each pollfd is {int fd; short
+// events; short revents}. Immediate readiness (no blocking yet -- returns what is
+// ready now; timeout is ignored). Returns the number of ready descriptors.
+fn long lx_poll(ulong* a)
+{
+    ulong fds = a[0];
+    long nfds = (long)a[1];
+    if (nfds < 0 || nfds > 1024) return (long)(-EINVAL);
+    long ready = 0;
+    for (long i = 0; i < nfds; i++)
+    {
+        ulong pf = fds + (ulong)i * 8;
+        int fd = (int)(((char*)pf)[0]) | ((int)(((char*)pf)[1]) << 8)
+               | ((int)(((char*)pf)[2]) << 16) | ((int)(((char*)pf)[3]) << 24);
+        ushort rev = 0;
+        if (fd >= 0 && fd < MAX_FDS && g_fd[fd].used)
+        {
+            if (g_fd[fd].type == FD_SOCK)
+            {
+                if (sock_readable(&g_fd[fd])) rev = (ushort)(rev | POLLIN);
+                if (sock_writable(&g_fd[fd])) rev = (ushort)(rev | POLLOUT);
+            }
+            else if (g_fd[fd].type == FD_FILE) { rev = (ushort)(POLLIN | POLLOUT); }
+            else { rev = POLLNVAL; }
+        }
+        else { rev = POLLNVAL; }
+        ((char*)pf)[6] = (char)(rev & 0xFF);
+        ((char*)pf)[7] = (char)((rev >> 8) & 0xFF);
+        if (rev != 0) ready++;
+    }
+    return ready;
+}
+
 fn long lx_do_open(char* path, long flags)
 {
     char* p = path;
@@ -803,6 +852,8 @@ fn ulong xk_linux_dispatch(ulong nr, ulong* a) @export("xk_linux_dispatch")
     else if (nr == 50) { return (ulong)lx_listen(a); }                          // listen
     else if (nr == 42) { return (ulong)lx_connect(a); }                         // connect
     else if (nr == 43) { return (ulong)lx_accept(a); }                          // accept
+    else if (nr == 7) { return (ulong)lx_poll(a); }                              // poll
+    else if (nr == 271) { return (ulong)lx_poll(a); }                            // ppoll (timeout/sigmask ignored)
     else if (nr == 56 || nr == 58) { return (ulong)(-ENOSYS); }  // clone/vfork (threads: later)
     else if (nr == 45 || nr == 44 || nr == 46 || nr == 54) { return (ulong)(-ENOSYS); } // sockets (sendmsg/recvmsg/etc)
     // Unknown syscall: print which one, then ENOSYS (keeps musl's failure visible).
