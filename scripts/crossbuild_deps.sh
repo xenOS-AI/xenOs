@@ -95,4 +95,16 @@ if [[ "${1:-all}" == pixman || "${1:-all}" == all ]]; then
     -Ddemos=disabled -Dgtk=disabled -Ddefault_library=static >/dev/null
   ninja -C build && ninja -C build install
 fi
+
+if [[ "${1:-all}" == xkbcommon || "${1:-all}" == all ]]; then
+  ver=1.6.0
+  cd "$SRC"
+  [ -d libxkbcommon-$ver ] || { curl -sSL -o xk.txz "https://github.com/xkbcommon/libxkbcommon/releases/download/xkbcommon-$ver/libxkbcommon-$ver.tar.xz" && tar xJf xk.txz; }
+  rm -rf libxkbcommon-$ver/build && cd libxkbcommon-$ver
+  meson setup build --cross-file="$SRC/wl-cross.txt" --prefix="$SYS" \
+    -Denable-x11=false -Denable-docs=false -Denable-tools=false -Denable-wayland=false \
+    -Denable-xkbregistry=false -Ddefault_library=static >/dev/null
+  ninja -C build && ninja -C build install
+  mkdir -p "$SYS/share/X11/xkb"   # xkb_context_new needs an existing data dir
+fi
 echo "cross deps installed to $SYS"
