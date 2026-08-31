@@ -447,6 +447,7 @@ fn long lx_getsockopt(ulong* a)
 fn ulong lx_rd64(ulong p) { return (ulong)((char*)p)[0] | ((ulong)((char*)p)[1] << 8) | ((ulong)((char*)p)[2] << 16) | ((ulong)((char*)p)[3] << 24) | ((ulong)((char*)p)[4] << 32) | ((ulong)((char*)p)[5] << 40) | ((ulong)((char*)p)[6] << 48) | ((ulong)((char*)p)[7] << 56); }
 fn uint wl_rdp32(ulong p) { return (uint)((char*)p)[0] | ((uint)((char*)p)[1] << 8) | ((uint)((char*)p)[2] << 16) | ((uint)((char*)p)[3] << 24); }
 int g_wlfd_pending = -1;
+uint g_last_shm_base = 0;   // last MAP_SHARED file/shm slot, robust pool fallback
 // sendmsg(fd, msghdr*, flags) -- nr 46
 fn long lx_sendmsg(ulong* a)
 {
@@ -1012,6 +1013,7 @@ fn long lx_do_mmap(ulong len, ulong flags, long fd_parm, ulong offset)
             mark_user_pde(g_linux_pml4, v);
             g_shared_slot[(v >> 21) & 0xFF] = true;
             g_fd[fd_parm].buf = v;                // compositor reads the pool's pixels here
+            g_last_shm_base = (uint)v;             // robust pool fallback when the cmsg fd is unusable
             return (long)v;
         }
         // MAP_PRIVATE file-backed: what ld-musl uses to map a DT_NEEDED .so from disk.

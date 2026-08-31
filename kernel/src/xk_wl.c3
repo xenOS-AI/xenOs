@@ -229,13 +229,20 @@ fn void wl_serve(int wix)
             if ((mouse_buttons & 1u) != 0) wl_emit_ptr_button(clifd, c.ptr_id, 0x110u);
         }
         else if (obj == c.shm_id && op == WLS_POOL && ms >= 16)
-                {
-                    c.pool_id = wl_rd32(s, 8);
-                    int fdn = g_wlfd_pending;       // the pool fd arrives via SCM_RIGHTS cmsg
-                    g_wlfd_pending = -1;
-                    if (fdn >= 0 && fdn < MAX_FDS && g_fd[fdn].used && g_fd[fdn].buf != 0) { c.surfs[c.curw].buf_base = (uint)g_fd[fdn].buf; }
-                    else { c.surfs[c.curw].buf_base = 0; }
-                }
+                        {
+                            c.pool_id = wl_rd32(s, 8);
+                            int fdn = g_wlfd_pending;          // libwayland passes the real pool fd via cmsg
+                            g_wlfd_pending = -1;
+                            uint b;
+                            if (fdn >= 0 && fdn < (int)MAX_FDS && g_fd[fdn].used && g_fd[fdn].type == FD_SHM && g_fd[fdn].buf != 0) {
+                                b = (uint)g_fd[fdn].buf;       // real SCM_RIGHTS shm fd
+                            } else if (fdn == -1) {
+                                b = wl_rd32(s, 12);            // raw client: fd arg IS the pool base vaddr
+                            } else {
+                                b = g_last_shm_base;           // pool fd readable but not FD_SHM -> last MAP_SHARED slot
+                            }
+                            c.surfs[c.curw].buf_base = b;
+                        }
                 else if (obj == c.pool_id && op == WLP_BUFFER && ms >= 32)
                 {
                     c.surfs[c.curw].bw = wl_rd32(s, 16);
