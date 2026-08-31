@@ -128,7 +128,17 @@ fn void wl_present(int wix)
     xk_puts(" -> framebuffer\n");
 }
 
-// Drain+answer one server connection (called from lx_sock_write after the client wrote).
+// Map a PS/2-derived ASCII char (kbd queue) to a Linux evdev keycode for the wire.
+uint[26] wl_letters = {30,48,46,32,18,33,34,35,23,36,37,38,50,49,24,25,16,19,31,20,22,47,17,45,21,44};
+fn uint wl_asc_keycode(char c)
+{
+    if (c >= 'a' && c <= 'z') return wl_letters[(uint)c - 0x61u];
+    if (c >= '1' && c <= '9') return (uint)(2 + (c - '1'));
+    if (c == '0') return 11;
+    if (c == ' ') return 57;
+    if (c == '\n') return 28;
+    return 0;
+}
 fn void wl_serve(int wix)
 {
     uint clifd = g_wl[wix].clifd;
@@ -166,8 +176,12 @@ fn void wl_serve(int wix)
         else if (obj == c.seat_id && op == WLSEAT_KB && ms >= 12)
         {
             c.kb_id = wl_rd32(s, 8);
-            wl_emit_key(clifd, c.kb_id, 30u, 1u);     // key 30 ('a') down
-            wl_emit_key(clifd, c.kb_id, 30u, 0u);     // key 30 ('a') up
+            // drain the REAL kernel keyboard queue (PS/2-derived chars -> evdev keycodes)
+            while (kbd_has())
+            {
+                uint kc = wl_asc_keycode(kbd_pop());
+                if (kc != 0) { wl_emit_key(clifd, c.kb_id, kc, 1u); wl_emit_key(clifd, c.kb_id, kc, 0u); }
+            }
         }
         else if (obj == c.shm_id && op == WLS_POOL && ms >= 20)
         {
