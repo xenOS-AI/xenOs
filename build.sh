@@ -60,12 +60,12 @@ nasm -f bin -o "$OUT/user_prog.bin" "$ROOT/user/sys_prog.asm"
 "$OUT/mkbin" "$OUT/user_prog.bin" "$SRC/xk_uprog.c3" user_prog
 echo "[build] uhello static musl ELF (Linux test binary bundled into the kernel)"
 if command -v musl-gcc >/dev/null 2>&1; then
-    musl-gcc -static -no-pie -O2 -o "$OUT/uhello" "$ROOT/tools/u_epoll.c"
+    musl-gcc -static -no-pie -O2 -o "$OUT/uhello" "$ROOT/tools/u_ipc.c"
     rm -f "$SRC/xk_ublob.c3"     # mkbin's lx_open creates mode-0000; truncate may then fail
     "$OUT/mkbin" "$OUT/uhello" "$SRC/xk_ublob.c3" linux_blob
     echo "    bundled uhello = $(stat -c%s "$OUT/uhello") bytes"
     echo "[build] uhello DYNAMIC musl ELF (dynamic main; interp loaded from FAT)"
-    musl-gcc -no-pie -O2 -o "$OUT/uhello_dyn" "$ROOT/tools/u_epoll.c"
+    musl-gcc -no-pie -O2 -o "$OUT/uhello_dyn" "$ROOT/tools/u_ipc.c"
     rm -f "$SRC/xk_dynblob.c3"
     "$OUT/mkbin" "$OUT/uhello_dyn" "$SRC/xk_dynblob.c3" dyn_blob
     echo "    dynamic main = $(stat -c%s "$OUT/uhello_dyn") bytes"

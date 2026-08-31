@@ -162,10 +162,62 @@ struct EpollSet { bool used; EpollItem[MAX_EPOLL_ITEM] items; }
 EpollSet[MAX_EPOLL_SETS] g_epolls;
 int[MAX_FDS] g_epoll_of;             // epfd -> set index (-1 = not an epoll fd)
 
+// ---- concurrent user processes (Phase A.1) ----
+// Cooperative scheduler: blocking syscalls park the current process and switch to
+// another runnable one via up_switch_to (never hardware-PIT-preempts a ring-3 frame,
+// which QEMU 11's iretq is fragile about). A parked process is re-dispatched fresh on
+// wake (its abandoned kernel stack frame is never resumed and simply gets reused).
+const int MAX_UPROC = 8;
+struct UProc
+{
+    bool used;
+    bool runnable;    // eligible to be scheduled
+    bool parked;      // blocked mid-syscall -> re-dispatch (sys_nr/sys_a) on wake
+    bool init;        // never run -> enter user at ret_rip with ret_rax
+    ulong pid;
+    ulong cr3;
+    ulong brk;
+    ulong mmap_cur;
+    LxFD[MAX_FDS] fds;
+    ulong ret_rax;
+    ulong user_rsp;
+    ulong ret_rip;        // rcx (user return RIP)
+    ulong ret_rflags;     // r11
+    ulong[12] regs;       // a1..a6 + callee (Linux ABI preserved set)
+    ulong sys_nr;         // parked syscall to re-dispatch
+    ulong[6] sys_a;
+}
+UProc[MAX_UPROC] g_up;
+int g_cur_up = -1;           // index of the currently executing process
+ulong g_disp_nr;             // syscall number of the in-flight syscall
+ulong* g_disp_a;             // its syscall arg block (points at syscall_kstack)
+
+// ---- shared socket state (Phase A.1) ----
+// Socket rings/queues must be SHARED across processes (a client in one process and a
+// compositor in another share the same socket). So all dynamic socket state lives in
+// this GLOBAL table (indexed by fd), NOT in the per-process fd table which is copied
+// on fork. Only g_fd[fd].used/.type route I/O from the copied tables.
+const int SOCK_CAP = 4096;
+struct SockState
+{
+    bool used;
+    ulong buf;       // kernel-heap ring (peer-fed on write, drained on read)
+    ulong cap;
+    ulong len;       // bytes buffered
+    ulong pos;       // ring read head
+    int peer;        // peer fd (-1 if none / peer closed)
+    bool listener;
+    char[24] spath;
+    int[4] pending;
+    uint pn;
+}
+SockState[MAX_FDS] g_sock;
+
 fn void linux_fd_init()
 {
     for (int i = 0; i < MAX_FDS; i++) { g_fd[i].used = false; g_fd[i].type = FD_NONE; g_fd[i].buf = 0; g_fd[i].cap = 0; g_fd[i].len = 0; g_fd[i].pos = 0; g_fd[i].peer = -1; g_fd[i].listener = false; g_fd[i].pn = 0; g_fd[i].spath[0] = 0; g_epoll_of[i] = -1; }
     for (int i = 0; i < MAX_EPOLL_SETS; i++) { g_epolls[i].used = false; for (int k = 0; k < MAX_EPOLL_ITEM; k++) { g_epolls[i].items[k].used = false; } }
+    for (int i = 0; i < MAX_FDS; i++) { g_sock[i].used = false; g_sock[i].peer = -1; g_sock[i].listener = false; g_sock[i].pn = 0; g_sock[i].buf = 0; g_sock[i].spath[0] = 0; }
     g_fd[0].used = true; g_fd[0].type = FD_FILE;   // stdin
     g_fd[1].used = true; g_fd[1].type = FD_FILE;   // stdout
     g_fd[2].used = true; g_fd[2].type = FD_FILE;   // stderr
@@ -179,10 +231,10 @@ fn void linux_fd_init()
 fn long lx_sock_write(long fd, char* buf, ulong len)
 {
     // socketpair semantics: bytes written to one endpoint are received at the
-    // peer, so a write appends to the PEER's receive queue.
-    int peer = g_fd[(int)fd].peer;
-    if (peer < 0 || peer >= MAX_FDS || !g_fd[peer].used) return (long)(-EPIPE);
-    LxFD* s = &g_fd[peer];
+    // peer, so a write appends to the PEER's receive queue (shared global state).
+    int peer = g_sock[(int)fd].peer;
+    if (peer < 0 || peer >= MAX_FDS || !g_sock[peer].used) return (long)(-EPIPE);
+    SockState* s = &g_sock[peer];
     ulong written = 0;
     while (written < len)
     {
@@ -192,13 +244,19 @@ fn long lx_sock_write(long fd, char* buf, ulong len)
         s.len++;
         written++;
     }
+    up_wake_all();                                 // wake any process blocked reading this
     return (long)written;
 }
 
 fn long lx_sock_read(long fd, char* buf, ulong len)
 {
-    LxFD* s = &g_fd[(int)fd];
-    if (s.len == 0) return 0;                      // empty: immediate EOF (no blocking yet)
+    SockState* s = &g_sock[(int)fd];
+    if (s.len == 0)
+    {
+        // blocking read: park and let another process run; re-dispatched when woken
+        if (up_park()) return 0;                   // switched (unreachable)
+        return (long)(-EAGAIN);                    // nobody else runnable: caller retries
+    }
     ulong got = 0;
     while (got < len && s.len > 0)
     {
@@ -213,16 +271,18 @@ fn long lx_sock_read(long fd, char* buf, ulong len)
 // socketpair(domain, type, protocol, int sv[2])  -- nr 53
 fn long lx_sockpair(ulong* a)
 {
-    if ((long)a[0] != 1) return (long)(-EINVAL);   // only AF_UNIX (1) for now
+    if ((long)a[0] != 1) return (long)(-EINVAL);     // AF_UNIX only
     int f1 = -1; int f2 = -1;
     for (int i = 3; i < MAX_FDS; i++) { if (!g_fd[i].used) { f1 = i; break; } }
     for (int i = (f1 < 0 ? 3 : f1 + 1); i < MAX_FDS; i++) { if (!g_fd[i].used) { f2 = i; break; } }
     if (f1 < 0 || f2 < 0) return (long)(-EMFILE);
-    char* b1 = (char*)kmalloc(4096);
-    char* b2 = (char*)kmalloc(4096);
+    char* b1 = (char*)kmalloc(SOCK_CAP);
+    char* b2 = (char*)kmalloc(SOCK_CAP);
     if (b1 == null || b2 == null) { if (b1 != null) kfree((void*)b1); if (b2 != null) kfree((void*)b2); return (long)(-ENOMEM); }
-    g_fd[f1].used = true; g_fd[f1].type = FD_SOCK; g_fd[f1].buf = (ulong)b1; g_fd[f1].cap = 4096; g_fd[f1].len = 0; g_fd[f1].pos = 0; g_fd[f1].peer = f2; g_fd[f1].listener = false; g_fd[f1].pn = 0; g_fd[f1].spath[0] = 0;
-    g_fd[f2].used = true; g_fd[f2].type = FD_SOCK; g_fd[f2].buf = (ulong)b2; g_fd[f2].cap = 4096; g_fd[f2].len = 0; g_fd[f2].pos = 0; g_fd[f2].peer = f1; g_fd[f2].listener = false; g_fd[f2].pn = 0; g_fd[f2].spath[0] = 0;
+    g_fd[f1].used = true; g_fd[f1].type = FD_SOCK;
+    g_fd[f2].used = true; g_fd[f2].type = FD_SOCK;
+    g_sock[f1].used = true; g_sock[f1].buf = (ulong)b1; g_sock[f1].cap = SOCK_CAP; g_sock[f1].len = 0; g_sock[f1].pos = 0; g_sock[f1].peer = f2; g_sock[f1].listener = false; g_sock[f1].pn = 0; g_sock[f1].spath[0] = 0;
+    g_sock[f2].used = true; g_sock[f2].buf = (ulong)b2; g_sock[f2].cap = SOCK_CAP; g_sock[f2].len = 0; g_sock[f2].pos = 0; g_sock[f2].peer = f1; g_sock[f2].listener = false; g_sock[f2].pn = 0; g_sock[f2].spath[0] = 0;
     ulong sv = a[3];
     if (sv != 0)
     {
@@ -237,14 +297,9 @@ fn long lx_sockpair(ulong* a)
 }
 
 // ---- AF_UNIX named server sockets (Phase A.4): the Wayland display-socket model ----
-// A process can socket()/bind()/listen() on a pathname (e.g. /run/wayland-0), then
-// clients socket()/connect() to it, and accept() a fresh endpoint per connection.
-// The accepted fd and the connecting client fd are a linked pair (like socketpair),
-// so the existing peer-based read/write works unchanged. Testable single-process by
-// listening and connecting to yourself.
-
-// Copy the path from a user sockaddr_un {ushort family; char sun_path[108]} into out.
-// Returns false unless the family is AF_UNIX(1).
+// All dynamic socket state (rings, listener accept-queue, bound path) lives in the
+// SHARED g_sock table so a listener in one process and a client in another really
+// communicate. Only g_fd[fd].used/.type are copied per-process (for I/O routing).
 fn bool sockaddr_un_path(ulong sa, char* out, uint max)
 {
     char* p = (char*)(ulong)sa;
@@ -281,9 +336,9 @@ fn long lx_socket(ulong* a)
     int fdi = -1;
     for (int i = 3; i < MAX_FDS; i++) { if (!g_fd[i].used) { fdi = i; break; } }
     if (fdi < 0) return (long)(-EMFILE);
-    g_fd[fdi].used = true; g_fd[fdi].type = FD_SOCK; g_fd[fdi].buf = 0; g_fd[fdi].cap = 0;
-    g_fd[fdi].len = 0; g_fd[fdi].pos = 0; g_fd[fdi].peer = -1; g_fd[fdi].listener = false;
-    g_fd[fdi].pn = 0; g_fd[fdi].spath[0] = 0;
+    g_fd[fdi].used = true; g_fd[fdi].type = FD_SOCK;
+    g_sock[fdi].used = true; g_sock[fdi].peer = -1; g_sock[fdi].listener = false; g_sock[fdi].pn = 0;
+    g_sock[fdi].buf = 0; g_sock[fdi].cap = SOCK_CAP; g_sock[fdi].len = 0; g_sock[fdi].pos = 0; g_sock[fdi].spath[0] = 0;
     return (long)fdi;
 }
 
@@ -292,8 +347,8 @@ fn long lx_bind(ulong* a)
 {
     long fd = (long)a[0];
     if (!sock_fd(fd)) return (long)(-EBADF);
-    if (!sockaddr_un_path(a[1], &g_fd[(int)fd].spath[0], 24)) return (long)(-EINVAL);
-    g_fd[(int)fd].listener = true;                  // bound; becomes a listen candidate
+    if (!sockaddr_un_path(a[1], &g_sock[(int)fd].spath[0], 24)) return (long)(-EINVAL);
+    g_sock[(int)fd].listener = true;                // bound; becomes a listen candidate
     return 0;
 }
 
@@ -302,7 +357,7 @@ fn long lx_listen(ulong* a)
 {
     long fd = (long)a[0];
     if (!sock_fd(fd)) return (long)(-EBADF);
-    g_fd[(int)fd].listener = true;
+    g_sock[(int)fd].listener = true;
     return 0;
 }
 
@@ -313,28 +368,24 @@ fn long lx_connect(ulong* a)
     if (!sock_fd(cfd)) return (long)(-EBADF);
     char[24] p;                                  // filled by sockaddr_un_path()
     if (!sockaddr_un_path(a[1], &p[0], 24)) return (long)(-EINVAL);
-    // find a listener bound to the same path
     int srv = -1;
     for (int i = 3; i < MAX_FDS; i++)
     {
-        if (g_fd[i].used && g_fd[i].type == FD_SOCK && g_fd[i].listener && sock_path_eq(&g_fd[i].spath[0], &p[0])) { srv = i; break; }
+        if (g_fd[i].used && g_fd[i].type == FD_SOCK && g_sock[i].listener && sock_path_eq(&g_sock[i].spath[0], &p[0])) { srv = i; break; }
     }
     if (srv < 0) return (long)(-ECONNREFUSED);
-    if (g_fd[srv].pn >= 4) return (long)(-EMFILE);
-    // allocate the server-side endpoint E and buffers for both ends
+    if (g_sock[srv].pn >= 4) return (long)(-EMFILE);
     int e = -1;
     for (int i = 3; i < MAX_FDS; i++) { if (!g_fd[i].used) { e = i; break; } }
     if (e < 0) return (long)(-EMFILE);
-    char* b1 = (char*)kmalloc(4096);
-    char* b2 = (char*)kmalloc(4096);
+    char* b1 = (char*)kmalloc(SOCK_CAP);
+    char* b2 = (char*)kmalloc(SOCK_CAP);
     if (b1 == null || b2 == null) { if (b1 != null) kfree((void*)b1); if (b2 != null) kfree((void*)b2); return (long)(-ENOMEM); }
-    // the connecting client fd becomes connected, its peer is the server endpoint E
-    g_fd[(int)cfd].buf = (ulong)b1; g_fd[(int)cfd].cap = 4096; g_fd[(int)cfd].len = 0;
-    g_fd[(int)cfd].pos = 0; g_fd[(int)cfd].peer = e; g_fd[(int)cfd].listener = false;
-    g_fd[e].used = true; g_fd[e].type = FD_SOCK; g_fd[e].buf = (ulong)b2; g_fd[e].cap = 4096;
-    g_fd[e].len = 0; g_fd[e].pos = 0; g_fd[e].peer = (int)cfd; g_fd[e].listener = false;
-    g_fd[e].pn = 0; g_fd[e].spath[0] = 0;
-    g_fd[srv].pending[g_fd[srv].pn++] = e;          // E waits in the listener's accept queue
+    g_fd[(int)cfd].type = FD_SOCK;
+    g_sock[(int)cfd].used = true; g_sock[(int)cfd].buf = (ulong)b1; g_sock[(int)cfd].cap = SOCK_CAP; g_sock[(int)cfd].len = 0; g_sock[(int)cfd].pos = 0; g_sock[(int)cfd].peer = e; g_sock[(int)cfd].listener = false;
+    g_fd[e].used = true; g_fd[e].type = FD_SOCK;
+    g_sock[e].used = true; g_sock[e].buf = (ulong)b2; g_sock[e].cap = SOCK_CAP; g_sock[e].len = 0; g_sock[e].pos = 0; g_sock[e].peer = (int)cfd; g_sock[e].listener = false; g_sock[e].pn = 0; g_sock[e].spath[0] = 0;
+    g_sock[srv].pending[g_sock[srv].pn++] = e;          // E waits in the listener's accept queue
     return 0;
 }
 
@@ -343,10 +394,10 @@ fn long lx_accept(ulong* a)
 {
     long fd = (long)a[0];
     if (!sock_fd(fd)) return (long)(-EBADF);
-    if (g_fd[(int)fd].pn == 0) return (long)(-EAGAIN);
-    int e = g_fd[(int)fd].pending[0];
-    for (uint i = 1; i < g_fd[(int)fd].pn; i++) { g_fd[(int)fd].pending[i - 1] = g_fd[(int)fd].pending[i]; }
-    g_fd[(int)fd].pn--;
+    if (g_sock[(int)fd].pn == 0) return (long)(-EAGAIN);
+    int e = g_sock[(int)fd].pending[0];
+    for (uint i = 1; i < g_sock[(int)fd].pn; i++) { g_sock[(int)fd].pending[i - 1] = g_sock[(int)fd].pending[i]; }
+    g_sock[(int)fd].pn--;
     return (long)e;
 }
 
@@ -357,13 +408,13 @@ const ushort POLLERR = 0x008;
 const ushort POLLHUP = 0x010;
 const ushort POLLNVAL= 0x020;
 
-fn bool sock_readable(LxFD* s)
+fn bool sock_readable(SockState* s)
 {
     return s.len > 0 || (s.listener && s.pn > 0);   // data waiting, or a pending accept
 }
-fn bool sock_writable(LxFD* s)
+fn bool sock_writable(SockState* s)
 {
-    return s.peer >= 0 && s.peer < MAX_FDS && g_fd[s.peer].used;   // peer still open
+    return s.peer >= 0 && s.peer < MAX_FDS && g_sock[s.peer].used;   // peer still open
 }
 
 // poll(struct pollfd *fds, nfds, timeout_ms). Each pollfd is {int fd; short
@@ -385,8 +436,8 @@ fn long lx_poll(ulong* a)
         {
             if (g_fd[fd].type == FD_SOCK)
             {
-                if (sock_readable(&g_fd[fd])) rev = (ushort)(rev | POLLIN);
-                if (sock_writable(&g_fd[fd])) rev = (ushort)(rev | POLLOUT);
+                if (sock_readable(&g_sock[fd])) rev = (ushort)(rev | POLLIN);
+                if (sock_writable(&g_sock[fd])) rev = (ushort)(rev | POLLOUT);
             }
             else if (g_fd[fd].type == FD_FILE) { rev = (ushort)(POLLIN | POLLOUT); }
             else { rev = POLLNVAL; }
@@ -401,16 +452,16 @@ fn long lx_poll(ulong* a)
 
 // ---- epoll (Phase A.4): the compositor's main loop ----
 // fd_ready_events(LxFD*) reuses the poll readiness predicate.
-fn uint fd_ready_events(LxFD* s)
+fn uint fd_ready_events(int fd)
 {
-    if (s.type == FD_SOCK)
+    if (g_fd[fd].type == FD_SOCK)
     {
         uint r = 0;
-        if (sock_readable(s)) r |= (uint)POLLIN;
-        if (sock_writable(s)) r |= (uint)POLLOUT;
+        if (sock_readable(&g_sock[fd])) r |= (uint)POLLIN;
+        if (sock_writable(&g_sock[fd])) r |= (uint)POLLOUT;
         return r;
     }
-    if (s.type == FD_FILE) return (uint)(POLLIN | POLLOUT);
+    if (g_fd[fd].type == FD_FILE) return (uint)(POLLIN | POLLOUT);
     return (uint)POLLERR;
 }
 
@@ -490,7 +541,7 @@ fn long lx_epoll_wait(ulong* a)
         int fd = g_epolls[si].items[i].fd;
         uint interest = g_epolls[si].items[i].events;
         uint eff = 0;
-        if (fd >= 0 && fd < MAX_FDS && g_fd[fd].used) { eff = fd_ready_events(&g_fd[fd]) & interest; }
+        if (fd >= 0 && fd < MAX_FDS && g_fd[fd].used) { eff = fd_ready_events(fd) & interest; }
         else { eff = (uint)(POLLERR & interest); }
         if (eff != 0)
         {
@@ -534,9 +585,10 @@ fn long lx_do_close(long fd)
     if (fd < 0 || fd >= MAX_FDS || !g_fd[fd].used || fd <= 2) return -EBADF;
     if (g_fd[fd].type == FD_SOCK)
     {
-        kfree((void*)g_fd[fd].buf);
-        int peer = g_fd[fd].peer;
-        if (peer >= 0 && peer < MAX_FDS && g_fd[peer].used && g_fd[peer].type == FD_SOCK) { g_fd[peer].peer = -1; }
+        kfree((void*)g_sock[fd].buf);
+        int peer = g_sock[fd].peer;
+        if (peer >= 0 && peer < MAX_FDS && g_sock[peer].used) { g_sock[peer].peer = -1; }
+        g_sock[fd].used = false;
     }
     else if (g_fd[fd].type == FD_EPOLL)
     {
@@ -687,23 +739,13 @@ fn bool xk_copy_user_region(ulong dst_pml4, ulong src_pml4)
 // runs; its exit_group resumes the parent (eax=child_pid).
 fn long lx_fork(ulong* a)
 {
-    ulong rcx = a[6];
-    ulong r11 = a[7];
-    ulong user_rsp = xk_get_user_rsp();
-    g_saved_parent_pml4 = g_linux_pml4;
-    g_saved_parent_brk = g_user_brk;
-    g_saved_parent_mmap = g_mmap_cur;
-    g_saved_parent_pid = g_linux_pid;
-    for (int i = 0; i < MAX_FDS; i++) { g_saved_parent_fds[i] = g_fd[i]; }
-    g_saved_parent_rcx = rcx;
-    g_saved_parent_r11 = r11;
-    g_saved_parent_user_rsp = user_rsp;
-    // Freeze the parent's FULL preserved register set BEFORE the child runs (the
-    // Linux ABI preserves every GPR except rax/rcx/r11 across syscall, and the
-    // child's syscalls clobber the shared ss_* snapshot). Restored in
-    // lx_resume_parent (and used to enter the child with the parent's regs).
-    ulong* rsnap = xk_get_resume_snapshot();
-    for (int ri = 0; ri < 12; ri++) { g_parent_resume_regs[ri] = rsnap[ri]; }
+    // Register a runnable CHILD process: a full clone of the current one that will
+    // run via the cooperative scheduler when the parent blocks/exits. The child
+    // inherits the parent's fork-time register set and address space (independent
+    // physical copy), and first enters user code at fork()'s return with eax=0.
+    int cs = -1;
+    for (int i = 0; i < MAX_UPROC; i++) { if (!g_up[i].used) { cs = i; break; } }
+    if (cs < 0) { xk_puts("[fork] no proc slots\r\n"); return (long)(-EMFILE); }
     ulong child_cr3 = create_process_addrspace(LX_USER_START);
     if (child_cr3 == 0) { xk_puts("[fork] no frames for child address space\r\n"); return (long)(-ENOMEM); }
     if (!xk_copy_user_region(child_cr3, g_linux_pml4))
@@ -712,26 +754,45 @@ fn long lx_fork(ulong* a)
         return (long)(-ENOMEM);
     }
     ulong child_pid = g_next_pid_num++;
-    // globals now describe the CHILD (brk/mmap/fds inherited from the parent's live values)
-    g_linux_pml4 = child_cr3;
-    g_linux_pid = child_pid;
-    g_fork_child_pid = child_pid;
-    g_fork_pending = true;
-    xk_puts("[fork] pid="); xk_putdec((int)g_saved_parent_pid);
+    ulong* rs = xk_get_resume_snapshot();
+    g_up[cs].used = true; g_up[cs].runnable = true; g_up[cs].parked = false; g_up[cs].init = true;
+    g_up[cs].pid = child_pid;
+    g_up[cs].cr3 = child_cr3;
+    g_up[cs].brk = g_user_brk;
+    g_up[cs].mmap_cur = g_mmap_cur;
+    for (int i = 0; i < MAX_FDS; i++) { g_up[cs].fds[i] = g_fd[i]; }
+    g_up[cs].ret_rax = 0;                        // child sees eax=0 at fork()'s return
+    g_up[cs].user_rsp = xk_get_user_rsp();
+    g_up[cs].ret_rip = a[6];
+    g_up[cs].ret_rflags = a[7];
+    for (int ri = 0; ri < 12; ri++) { g_up[cs].regs[ri] = rs[ri]; }
+    xk_puts("[fork] pid="); xk_putdec((int)g_linux_pid);
     xk_puts(" fork -> child pid="); xk_putdec((int)child_pid); xk_puts("\r\n");
-    xk_set_resume_block(&g_parent_resume_regs[0]);
-    xk_set_cr3(child_cr3);
-    xk_user_return(0, rcx, user_rsp, r11);   // enter the CHILD at fork()'s return, eax=0
-    return (long)(-1);                       // unreached
+    return (long)child_pid;                    // the PARENT continues normally
 }
 
-// wait4(pid, *status, options, *rusage): simpler synchronous reap -- the child
-// has already fully run; return its pid with a zero status.
+// wait4(pid, *status, options, *rusage). Blocks (parks the process) until the waited
+// child has exited, then returns its pid with a zero status.
 fn long lx_wait4(ulong* a)
 {
+    ulong want = a[0];
+    bool active = false;
+    if (want == (ulong)-1 || want == 0)
+    {
+        for (int i = 0; i < MAX_UPROC; i++) { if (g_up[i].used && g_up[i].pid != g_linux_pid) { active = true; break; } }
+    }
+    else
+    {
+        active = proc_pid_active(want);
+    }
+    if (active)
+    {
+        if (up_park()) return 0;                   // switched (unreachable)
+        return (long)(-EAGAIN);                    // no other runnable process: caller retries
+    }
     ulong st = a[1];
     if (st != 0) { for (int i = 0; i < 4; i++) { ((char*)st)[i] = 0; } }
-    return (long)g_fork_child_pid;
+    return (long)want;                             // the reaped pid
 }
 
 // Resume the suspended parent after the child has exited. Nothing returned.
@@ -843,27 +904,134 @@ fn long lx_uname(char* buf)
 //   ulong xk_linux_dispatch(ulong nr, ulong* a)  -- a[0..5] = a1..a6 (sysV)
 // A negative return is a Linux errno (musl negates it into errno). exit_group
 // never returns (it resumes the desktop via umode_resume).
+
+// ---- concurrent-process scheduler helpers (Phase A.1) ----
+fn void up_register0()
+{
+    for (int i = 0; i < MAX_UPROC; i++) { g_up[i].used = false; }
+    g_up[0].used = true; g_up[0].runnable = true; g_up[0].parked = false; g_up[0].init = true;
+    g_up[0].pid = g_linux_pid;
+    g_up[0].cr3 = g_linux_pml4;
+    g_up[0].brk = g_user_brk;
+    g_up[0].mmap_cur = g_mmap_cur;
+    for (int i = 0; i < MAX_FDS; i++) { g_up[0].fds[i] = g_fd[i]; }
+    g_up[0].user_rsp = 0; g_up[0].ret_rip = 0; g_up[0].ret_rflags = 0; g_up[0].ret_rax = 0;
+    g_cur_up = 0;
+}
+
+fn void up_save_current()
+{
+    int me = g_cur_up;
+    g_up[me].cr3 = g_linux_pml4;
+    g_up[me].brk = g_user_brk;
+    g_up[me].mmap_cur = g_mmap_cur;
+    for (int i = 0; i < MAX_FDS; i++) { g_up[me].fds[i] = g_fd[i]; }
+}
+
+fn void up_load(int ix)
+{
+    g_linux_pml4 = g_up[ix].cr3;
+    g_user_brk = g_up[ix].brk;
+    g_mmap_cur = g_up[ix].mmap_cur;
+    for (int i = 0; i < MAX_FDS; i++) { g_fd[i] = g_up[ix].fds[i]; }
+    g_linux_pid = g_up[ix].pid;
+}
+
+// Switch to process `nxt`. Save the current process's live globals first (it may be
+// scheduled again later). If nxt was PARKED, re-dispatch its awaited syscall fresh;
+// otherwise enter it at its user return point with ret_rax. NEVER returns.
+fn void up_switch_to(int nxt)
+{
+    if (g_cur_up >= 0 && g_cur_up < MAX_UPROC && g_up[g_cur_up].used) { up_save_current(); }
+    g_cur_up = nxt;
+    up_load(nxt);
+    xk_set_cr3(g_linux_pml4);
+    xk_set_resume_block(&g_up[nxt].regs[0]);
+    if (g_up[nxt].parked)
+    {
+        g_up[nxt].parked = false;
+        ulong nr = g_up[nxt].sys_nr;
+        ulong* a = &g_up[nxt].sys_a[0];
+        ulong r = xk_linux_dispatch(nr, a);        // re-run the awaited syscall
+        xk_user_return(r, g_up[nxt].ret_rip, g_up[nxt].user_rsp, g_up[nxt].ret_rflags);
+    }
+    else
+    {
+        g_up[nxt].init = false;
+        xk_user_return(g_up[nxt].ret_rax, g_up[nxt].ret_rip, g_up[nxt].user_rsp, g_up[nxt].ret_rflags);
+    }
+    // never reached
+}
+
+fn int up_next_runnable()
+{
+    for (int i = 1; i <= MAX_UPROC; i++)
+    {
+        int k = (g_cur_up + i) % MAX_UPROC;
+        if (g_up[k].used && g_up[k].runnable) return k;
+    }
+    return -1;
+}
+
+// Park the current process mid-syscall. If another process is runnable, switch to it
+// (never returns -> returns true). Otherwise un-park and return false so the caller
+// returns -EAGAIN.
+fn bool up_park()
+{
+    int me = g_cur_up;
+    ulong* a = g_disp_a;
+    ulong* rs = xk_get_resume_snapshot();
+    g_up[me].user_rsp = xk_get_user_rsp();
+    g_up[me].ret_rip = a[6];
+    g_up[me].ret_rflags = a[7];
+    for (int ci = 0; ci < 12; ci++) { g_up[me].regs[ci] = rs[ci]; }
+    g_up[me].sys_nr = g_disp_nr;
+    for (int ci = 0; ci < 6; ci++) { g_up[me].sys_a[ci] = a[ci]; }
+    g_up[me].parked = true;
+    g_up[me].runnable = false;
+    int nxt = up_next_runnable();
+    if (nxt >= 0) { up_switch_to(nxt); return true; }    // never returns
+    g_up[me].parked = false;
+    g_up[me].runnable = true;
+    return false;
+}
+
+// Coarse wake: make every parked process runnable again (it re-checks on re-dispatch).
+fn void up_wake_all()
+{
+    for (int i = 0; i < MAX_UPROC; i++)
+    {
+        if (g_up[i].used && g_up[i].parked) { g_up[i].runnable = true; }
+    }
+}
+
+fn bool proc_pid_active(ulong pid)
+{
+    for (int i = 0; i < MAX_UPROC; i++) { if (g_up[i].used && g_up[i].pid == pid) return true; }
+    return false;
+}
+
 fn ulong xk_linux_dispatch(ulong nr, ulong* a) @export("xk_linux_dispatch")
 {
-    // If this is the CHILD of a fork exiting, resume the suspended parent first:
-    // in the synchronous child-first fork model the child's exit_group is how
-    // control returns to the parent.
-    if ((nr == 60 || nr == 231) && g_fork_pending)
-    {
-        xk_puts("\r\n[linux] child process exited (code=");
-        xk_putdec((int)a[0]);
-        xk_puts(")\r\n");
-        lx_resume_parent();
-        return 0;                                    // unreached
-    }
+    // record the in-flight syscall (re-dispatch of a parked process reads these)
+    g_disp_nr = nr;
+    g_disp_a = a;
     if (nr == 60 || nr == 231)                       // exit / exit_group
     {
         xk_puts("\r\n[linux] process exited (code=");
         xk_putdec((int)a[0]);
-        xk_puts(") > returning to xenOS desktop\\r\\n");
-        umode_resume();
-        return 0;                                    // unreached
-    }
+        xk_puts(") > handing off to the next runnable process\r\n");
+                // scheduler: this process is done; wake any parked and hand off
+                g_up[g_cur_up].used = false;
+                g_up[g_cur_up].runnable = false;
+                g_up[g_cur_up].parked = false;
+                up_wake_all();
+                int nx = up_next_runnable();
+                if (nx >= 0) { up_switch_to(nx); return 0; }        // never returns
+                g_cur_up = -1;
+                umode_resume();                                    // no more processes: desktop
+                return 0;                                    // unreached
+            }
     else if (nr == 1)       { return (ulong)lx_do_write((long)a[0], (char*)(ulong)a[1], a[2]); }
     else if (nr == 0)       { return (ulong)lx_do_read((long)a[0], (char*)(ulong)a[1], a[2]); }
     else if (nr == 2)       { return (ulong)lx_do_open((char*)(ulong)a[0], (long)a[1]); }
@@ -1103,6 +1271,7 @@ fn void linux_launch(ulong entry, ulong stack)
     xk_puthex(stack);
     xk_puts(")\r\n");
     linux_fd_init();
+    up_register0();          // proc 0 = this first process, enters the scheduler
     xk_mask_hw_irqs(1);      // keep device IRQs off while the ring-3 process runs
     xk_set_cr3(g_linux_pml4);
     xk_enter_ring3(entry, stack);
