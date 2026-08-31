@@ -105,6 +105,7 @@ const long EAGAIN = 11;
 const long ECONNREFUSED = 111;
 const long EEXIST = 17;
 const long ENOSPC = 28;
+const long EISDIR = 21;
 
 fn uint rd_u16(char* b, uint off) { return (uint)((char)b[off]) | ((uint)((char)b[off+1]) << 8); }
 fn uint rd_u32(char* b, uint off)
@@ -146,6 +147,8 @@ const uint FD_NONE = 0;
 const uint FD_FILE = 1;
 const uint FD_SOCK = 2;    // in-kernel byte-stream socket (AF_UNIX SOCK_STREAM)
 const uint FD_EPOLL = 3;   // epoll interest-list fd
+const uint FD_NULL  = 4;   // /dev/null
+const uint FD_ZERO  = 5;   // /dev/zero
 struct LxFD { bool used; uint type; ulong buf; ulong cap; ulong len; ulong pos; int peer;
               bool listener; char[24] spath; int[4] pending; uint pn; }
 LxFD[MAX_FDS] g_fd;
@@ -555,11 +558,93 @@ fn long lx_epoll_wait(ulong* a)
     return n;
 }
 
+// ---- Phase A.6: minimal virtual filesystem (devfs) ----
+// Virtual paths (no real mounts yet) the display stack opens/stat/accesses daily:
+//   /dev/null, /dev/zero                -> in-kernel char devices
+//   /dev, /dev/shm, /run, /tmp, /proc, /proc/self -> virtual directories
+//   /proc/version|meminfo|cpuinfo|uptime|self/*   -> stub text files
+// Anything else falls through to the real FAT16 volume.
+const int VF_UNKNOWN = 0;
+const int VF_NULL    = 1;
+const int VF_ZERO    = 2;
+const int VF_DIR     = 3;
+const int VF_PROC    = 4;
+
+fn bool xk_streq_ci(char* a, char* b)
+{
+    int i = 0;
+    while (a[i] != 0 && b[i] != 0)
+    {
+        char ca = a[i]; char cb = b[i];
+        if (ca >= 'A' && ca <= 'Z') ca = (char)(ca + 32);
+        if (cb >= 'A' && cb <= 'Z') cb = (char)(cb + 32);
+        if (ca != cb) return false;
+        i++;
+    }
+    return a[i] == b[i];
+}
+
+fn bool xk_startswith(char* a, char* pre)
+{
+    int i = 0;
+    while (pre[i] != 0) { if (a[i] != pre[i]) return false; i++; }
+    return true;
+}
+
+fn int vf_classify(char* p)   // `p` has leading '/' already stripped
+{
+    if (xk_streq_ci(p, "dev/null")) return VF_NULL;
+    if (xk_streq_ci(p, "dev/zero")) return VF_ZERO;
+    if (xk_streq_ci(p, "dev") || xk_streq_ci(p, "dev/shm") || xk_streq_ci(p, "run")
+        || xk_streq_ci(p, "tmp") || xk_streq_ci(p, "proc") || xk_streq_ci(p, "proc/self")) return VF_DIR;
+    if (xk_startswith(p, "proc/")) return VF_PROC;
+    return VF_UNKNOWN;
+}
+
+// Fill a kernel buffer with a stub /proc file's text; returns bytes written.
+fn ulong proc_stub_fill(char* name, char* out, uint cap)
+{
+    char* s = "proc stub\n";
+    if (xk_startswith(name, "proc/version")) { s = "Linux version 0.0.0-xenOS (purist)\n"; }
+    else if (xk_startswith(name, "proc/cpuinfo")) { s = "processor\t: 0\nvendor_id\t: xenOS\n"; }
+    else if (xk_startswith(name, "proc/meminfo")) { s = "MemTotal:       262144 kB\n"; }
+    else if (xk_startswith(name, "proc/uptime")) { s = "0.00 0.00\n"; }
+    else if (xk_startswith(name, "proc/self/")) { s = "self-stub\n"; }
+    uint i = 0;
+    while (s[i] != 0 && i < cap - 1) { out[i] = s[i]; i++; }
+    out[i] = 0;
+    return (ulong)i;
+}
+
 fn long lx_do_open(char* path, long flags)
 {
     char* p = path;
     int guard = 0;
     while ((char)p[0] == '/' && guard < 16) { p++; guard++; }
+    int vf = vf_classify(p);
+    if (vf == VF_NULL || vf == VF_ZERO)
+    {
+        int fdi = 0;
+        for (fdi = 0; fdi < MAX_FDS; fdi++) { if (!g_fd[fdi].used) break; }
+        if (fdi >= MAX_FDS) return (long)(-EMFILE);
+        g_fd[fdi].used = true; g_fd[fdi].type = (vf == VF_NULL) ? FD_NULL : FD_ZERO;
+        g_fd[fdi].buf = 0; g_fd[fdi].len = 0; g_fd[fdi].pos = 0; g_fd[fdi].peer = -1;
+        return (long)fdi;
+    }
+    if (vf == VF_DIR) return (long)(-EISDIR);
+    if (vf == VF_PROC)
+    {
+        uint cap2 = 512;
+        char* buf = (char*)kmalloc(cap2);
+        if (buf == null) return (long)(-ENOMEM);
+        ulong n = proc_stub_fill(p, buf, cap2);
+        int fdi = 0;
+        for (fdi = 0; fdi < MAX_FDS; fdi++) { if (!g_fd[fdi].used) break; }
+        if (fdi >= MAX_FDS) { kfree((void*)buf); return (long)(-EMFILE); }
+        g_fd[fdi].used = true; g_fd[fdi].type = FD_FILE;
+        g_fd[fdi].buf = (ulong)buf; g_fd[fdi].len = n; g_fd[fdi].pos = 0; g_fd[fdi].peer = -1;
+        return (long)fdi;
+    }
     uint cap = 65536;
     char* buf = (char*)kmalloc(cap);
     if (buf == null) return -ENOMEM;
@@ -617,6 +702,12 @@ fn long lx_do_read(long fd, char* buf, ulong len)
 {
     if (fd < 0 || fd >= MAX_FDS || !g_fd[fd].used) return -EBADF;
     if (g_fd[fd].type == FD_SOCK) return lx_sock_read(fd, buf, len);
+    if (g_fd[fd].type == FD_NULL) return 0;                       // /dev/null: EOF
+    if (g_fd[fd].type == FD_ZERO)                                  // /dev/zero: NULs
+    {
+        for (ulong i = 0; i < len; i++) { ((char*)(ulong)buf)[i] = 0; }
+        return (long)len;
+    }
     if (fd == 0) return 0;                       // stdin: immediate EOF
     ulong pos  = g_fd[fd].pos;
     ulong l    = g_fd[fd].len;
@@ -631,6 +722,7 @@ fn long lx_do_write(long fd, char* buf, ulong len)
 {
     if (fd < 0 || fd >= MAX_FDS || !g_fd[fd].used) return -EBADF;
     if (g_fd[fd].type == FD_SOCK) return lx_sock_write(fd, buf, len);
+    if (g_fd[fd].type == FD_NULL || g_fd[fd].type == FD_ZERO) return (long)len;   // discard
     if (fd != 1 && fd != 2) return -EBADF;       // only stdout/stderr for files
     for (ulong i = 0; i < len; i++) { xk_serial_putc(((char*)(ulong)buf)[i]); }
     return (long)len;
@@ -869,6 +961,16 @@ fn void lx_stat_fill(char* sb, uint mode, ulong size, bool is_dir)
 
 fn long lx_stat_path(char* path, char* sb)
 {
+    char* p = path;
+    int g2 = 0;
+    while ((char)p[0] == '/' && g2 < 16) { p++; g2++; }
+    int vf = vf_classify(p);
+    if (vf != VF_UNKNOWN)
+    {
+        if (vf == VF_NULL || vf == VF_ZERO) { lx_stat_fill(sb, 0, 0, false); return 0; }
+        if (vf == VF_DIR) { lx_stat_fill(sb, 0, 0, true); return 0; }
+        if (vf == VF_PROC) { lx_stat_fill(sb, 0, 32, false); return 0; }
+    }
     ulong size = 0;
     bool isdir = false;
     if (!lx_fat_find(path, &size, &isdir)) return -ENOENT;
@@ -1095,6 +1197,10 @@ fn ulong xk_linux_dispatch(ulong nr, ulong* a) @export("xk_linux_dispatch")
     else if (nr == 111 || nr == 121) { return g_linux_pid; }                 // getpgrp/getpgid
     else if (nr == 21)     // access
     {
+        char* pp = (char*)(ulong)a[0];
+        int gp = 0;
+        while ((char)pp[0] == '/' && gp < 16) { pp++; gp++; }
+        if (vf_classify(pp) != VF_UNKNOWN) return 0;
         ulong s; bool d;
         return (ulong)(lx_fat_find((char*)(ulong)a[0], &s, &d) ? 0 : -ENOENT);
     }
