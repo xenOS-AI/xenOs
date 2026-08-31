@@ -179,7 +179,7 @@ fn void wl_serve(int wix)
     {
         uint obj = wl_rd32(s, 0);
         uint op  = wl_rd16(s, 4);
-        uint ms  = wl_rd16(s, 6);
+        uint ms = wl_rd16(s, 6);
         if (ms < 8 || s.len < ms) break;
         if (obj == 1u && op == WLD_GET_REGISTRY && ms >= 12)
                 {
@@ -189,10 +189,11 @@ fn void wl_serve(int wix)
                     wl_emit_global(clifd, c.robj, 3, "wl_seat", 6);
                 }
                 else if (obj == 1u && op == WLD_SYNC && ms >= 12)      // wl_display.sync -> callback.done
-                {
-                    c.cbid = wl_rd32(s, 8);
-                    wl_emit_cb_done(clifd, c.cbid);
-                }
+                        {
+                            c.cbid = wl_rd32(s, 8);
+                            xk_puts("[wl-d] sync cb="); xk_putdec((int)c.cbid); xk_puts("\n");
+                            wl_emit_cb_done(clifd, c.cbid);
+                        }
         else if (obj == c.robj && obj >= 2u && op == WLREG_BIND && ms >= 24)
         {
             uint name = wl_rd32(s, 8);
@@ -227,10 +228,13 @@ fn void wl_serve(int wix)
             wl_emit_ptr_motion(clifd, c.ptr_id, fx, fy);
             if ((mouse_buttons & 1u) != 0) wl_emit_ptr_button(clifd, c.ptr_id, 0x110u);
         }
-        else if (obj == c.shm_id && op == WLS_POOL && ms >= 20)
+        else if (obj == c.shm_id && op == WLS_POOL && ms >= 16)
                 {
                     c.pool_id = wl_rd32(s, 8);
-                    c.surfs[c.curw].buf_base = wl_rd32(s, 12);   // "fd" transport: SHM pixel base (single-proc)
+                    int fdn = g_wlfd_pending;       // the pool fd arrives via SCM_RIGHTS cmsg
+                    g_wlfd_pending = -1;
+                    if (fdn >= 0 && fdn < MAX_FDS && g_fd[fdn].used && g_fd[fdn].buf != 0) { c.surfs[c.curw].buf_base = (uint)g_fd[fdn].buf; }
+                    else { c.surfs[c.curw].buf_base = 0; }
                 }
                 else if (obj == c.pool_id && op == WLP_BUFFER && ms >= 32)
                 {

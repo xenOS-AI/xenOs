@@ -445,6 +445,8 @@ fn long lx_getsockopt(ulong* a)
 // ---- libwayland uses sendmsg/recvmsg (MSG_NOSIGNAL|MSG_DONTWAIT) for its socket
 //      I/O, NOT writev. These route the msghdr iovs to the socket layer. ----
 fn ulong lx_rd64(ulong p) { return (ulong)((char*)p)[0] | ((ulong)((char*)p)[1] << 8) | ((ulong)((char*)p)[2] << 16) | ((ulong)((char*)p)[3] << 24) | ((ulong)((char*)p)[4] << 32) | ((ulong)((char*)p)[5] << 40) | ((ulong)((char*)p)[6] << 48) | ((ulong)((char*)p)[7] << 56); }
+fn uint wl_rdp32(ulong p) { return (uint)((char*)p)[0] | ((uint)((char*)p)[1] << 8) | ((uint)((char*)p)[2] << 16) | ((uint)((char*)p)[3] << 24); }
+int g_wlfd_pending = -1;
 // sendmsg(fd, msghdr*, flags) -- nr 46
 fn long lx_sendmsg(ulong* a)
 {
@@ -453,6 +455,18 @@ fn long lx_sendmsg(ulong* a)
     ulong mh = a[1];
     ulong iov = lx_rd64(mh + 16);       // msg_iov
     ulong iovlen = lx_rd64(mh + 24);    // msg_iovlen
+    // extract an SCM_RIGHTS fd from msg_control FIRST (wl_serve runs during sock_write below)
+    ulong ctl = lx_rd64(mh + 32);       // msg_control
+    if (ctl != 0)
+    {
+        ulong clen = lx_rd64(ctl);      // cmsg_len
+        if (clen >= 16u + 4u)
+        {
+            uint clevel = wl_rdp32(ctl + 8);
+            uint ctype = wl_rdp32(ctl + 12);
+            if (clevel == 1u && ctype == 1u) g_wlfd_pending = (int)wl_rdp32(ctl + 16);   // SOL_SOCKET / SCM_RIGHTS
+        }
+    }
     long total = 0;
     for (ulong i = 0; i < iovlen; i++)
     {
@@ -983,10 +997,25 @@ fn long lx_do_mmap(ulong len, ulong flags, long fd_parm, ulong offset)
 {
     ulong want = (len + 4095) & ~((ulong)4095);
     if (want == 0) want = 4096;
-    // MAP_PRIVATE file-backed: what ld-musl uses to map a DT_NEEDED .so from disk.
+    // MAP_SHARED file/shm-backed: a shared 2 MiB slot whose vaddr is stored in the
+    // fd so the compositor (same process) blits the client's painted pool directly.
     if (fd_parm > 0 && (flags & 0x20u) == 0)
     {
-        if (fd_parm >= MAX_FDS || !g_fd[fd_parm].used || g_fd[fd_parm].type != FD_FILE) return (long)(-EBADF);
+        if (fd_parm >= MAX_FDS || !g_fd[fd_parm].used) return (long)(-EBADF);
+        if ((flags & 0x1ul) != 0)                 // MAP_SHARED file/shm (wl_shm pool)
+        {
+            if (g_fd[fd_parm].type != FD_FILE && g_fd[fd_parm].type != FD_SHM) return (long)(-EBADF);
+            ulong nslot = (want + 0x1FFFFFul) / 0x200000ul;
+            if (g_mmap_cur + nslot * 0x200000ul > LX_MMAP_END) return (long)(-ENOMEM);
+            ulong v = (g_mmap_cur + 0x1FFFFFul) & ~(ulong)0x1FFFFF;
+            g_mmap_cur = v + nslot * 0x200000ul;
+            mark_user_pde(g_linux_pml4, v);
+            g_shared_slot[(v >> 21) & 0xFF] = true;
+            g_fd[fd_parm].buf = v;                // compositor reads the pool's pixels here
+            return (long)v;
+        }
+        // MAP_PRIVATE file-backed: what ld-musl uses to map a DT_NEEDED .so from disk.
+        if (g_fd[fd_parm].type != FD_FILE) return (long)(-EBADF);
         if (offset > g_fd[fd_parm].len) return (long)(-EINVAL);
         if (g_mmap_cur + want > LX_MMAP_END) return (long)(-ENOMEM);
         ulong v = g_mmap_cur;
