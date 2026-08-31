@@ -103,6 +103,8 @@ const long EMFILE = 24;
 const long EPIPE  = 32;
 const long EAGAIN = 11;
 const long ECONNREFUSED = 111;
+const long EEXIST = 17;
+const long ENOSPC = 28;
 
 fn uint rd_u16(char* b, uint off) { return (uint)((char)b[off]) | ((uint)((char)b[off+1]) << 8); }
 fn uint rd_u32(char* b, uint off)
@@ -143,14 +145,27 @@ const int MAX_FDS = 32;
 const uint FD_NONE = 0;
 const uint FD_FILE = 1;
 const uint FD_SOCK = 2;    // in-kernel byte-stream socket (AF_UNIX SOCK_STREAM)
+const uint FD_EPOLL = 3;   // epoll interest-list fd
 struct LxFD { bool used; uint type; ulong buf; ulong cap; ulong len; ulong pos; int peer;
               bool listener; char[24] spath; int[4] pending; uint pn; }
 LxFD[MAX_FDS] g_fd;
 LxFD[MAX_FDS] g_saved_parent_fds;   // snapshot taken at fork() to restore the parent
 
+// ---- epoll sets (Phase A.4): per-epoll-fd interest list ----
+const int MAX_EPOLL_SETS = 8;
+const int MAX_EPOLL_ITEM = 32;
+const uint EPOLL_CTL_ADD = 1;
+const uint EPOLL_CTL_DEL = 2;
+const uint EPOLL_CTL_MOD = 3;
+struct EpollItem { bool used; int fd; uint events; ulong data; }
+struct EpollSet { bool used; EpollItem[MAX_EPOLL_ITEM] items; }
+EpollSet[MAX_EPOLL_SETS] g_epolls;
+int[MAX_FDS] g_epoll_of;             // epfd -> set index (-1 = not an epoll fd)
+
 fn void linux_fd_init()
 {
-    for (int i = 0; i < MAX_FDS; i++) { g_fd[i].used = false; g_fd[i].type = FD_NONE; g_fd[i].buf = 0; g_fd[i].cap = 0; g_fd[i].len = 0; g_fd[i].pos = 0; g_fd[i].peer = -1; g_fd[i].listener = false; g_fd[i].pn = 0; g_fd[i].spath[0] = 0; }
+    for (int i = 0; i < MAX_FDS; i++) { g_fd[i].used = false; g_fd[i].type = FD_NONE; g_fd[i].buf = 0; g_fd[i].cap = 0; g_fd[i].len = 0; g_fd[i].pos = 0; g_fd[i].peer = -1; g_fd[i].listener = false; g_fd[i].pn = 0; g_fd[i].spath[0] = 0; g_epoll_of[i] = -1; }
+    for (int i = 0; i < MAX_EPOLL_SETS; i++) { g_epolls[i].used = false; for (int k = 0; k < MAX_EPOLL_ITEM; k++) { g_epolls[i].items[k].used = false; } }
     g_fd[0].used = true; g_fd[0].type = FD_FILE;   // stdin
     g_fd[1].used = true; g_fd[1].type = FD_FILE;   // stdout
     g_fd[2].used = true; g_fd[2].type = FD_FILE;   // stderr
@@ -384,6 +399,111 @@ fn long lx_poll(ulong* a)
     return ready;
 }
 
+// ---- epoll (Phase A.4): the compositor's main loop ----
+// fd_ready_events(LxFD*) reuses the poll readiness predicate.
+fn uint fd_ready_events(LxFD* s)
+{
+    if (s.type == FD_SOCK)
+    {
+        uint r = 0;
+        if (sock_readable(s)) r |= (uint)POLLIN;
+        if (sock_writable(s)) r |= (uint)POLLOUT;
+        return r;
+    }
+    if (s.type == FD_FILE) return (uint)(POLLIN | POLLOUT);
+    return (uint)POLLERR;
+}
+
+// epoll_create1(flags) -- nr 291
+fn long lx_epoll_create1(ulong* a)
+{
+    int si = -1;
+    for (int i = 0; i < MAX_EPOLL_SETS; i++) { if (!g_epolls[i].used) { si = i; break; } }
+    if (si < 0) return (long)(-EMFILE);
+    int fdi = -1;
+    for (int i = 3; i < MAX_FDS; i++) { if (!g_fd[i].used) { fdi = i; break; } }
+    if (fdi < 0) return (long)(-EMFILE);
+    g_epolls[si].used = true;
+    for (int k = 0; k < MAX_EPOLL_ITEM; k++) { g_epolls[si].items[k].used = false; }
+    g_fd[fdi].used = true; g_fd[fdi].type = FD_EPOLL; g_fd[fdi].buf = 0; g_fd[fdi].cap = 0;
+    g_fd[fdi].len = 0; g_fd[fdi].pos = 0; g_fd[fdi].peer = -1; g_fd[fdi].listener = false; g_fd[fdi].pn = 0;
+    g_epoll_of[fdi] = si;
+    return (long)fdi;
+}
+
+// epoll_ctl(epfd, op, fd, struct epoll_event*) -- nr 233
+// struct epoll_event = { u32 events @0; pad; u64 data @8 } (16 bytes).
+fn long lx_epoll_ctl(ulong* a)
+{
+    int epfd = (int)a[0]; int op = (int)a[1]; int fd = (int)a[2]; ulong ev = a[3];
+    if (!(epfd >= 0 && epfd < MAX_FDS && g_fd[epfd].used && g_fd[epfd].type == FD_EPOLL)) return (long)(-EBADF);
+    int si = g_epoll_of[epfd];
+    if (si < 0 || !g_epolls[si].used) return (long)(-EBADF);
+    int found = -1;
+    for (int i = 0; i < MAX_EPOLL_ITEM; i++)
+    {
+        if (g_epolls[si].items[i].used && g_epolls[si].items[i].fd == fd) { found = i; break; }
+    }
+    if (op == (int)EPOLL_CTL_DEL)
+    {
+        if (found < 0) return (long)(-ENOENT);
+        g_epolls[si].items[found].used = false;
+        return 0;
+    }
+    // read events(4@ev+0) and data(8@ev+4). musl's struct epoll_event is PACKED:
+    // sizeof=12, data at offset 4 (NOT the 16-byte glibc layout). Kernel must use
+    // the same packed layout the test program compiles with.
+    uint evmask = (uint)(((char*)ev)[0]) | ((uint)(((char*)ev)[1]) << 8)
+                | ((uint)(((char*)ev)[2]) << 16) | ((uint)(((char*)ev)[3]) << 24);
+    ulong data = 0;
+    for (int i = 7; i >= 0; i--) { data = (data << 8) | (ulong)(uint)(((char*)ev)[4 + i]); }
+    if (op == (int)EPOLL_CTL_ADD)
+    {
+        if (found >= 0) return (long)(-EEXIST);
+        int slot = -1;
+        for (int i = 0; i < MAX_EPOLL_ITEM; i++) { if (!g_epolls[si].items[i].used) { slot = i; break; } }
+        if (slot < 0) return (long)(-ENOSPC);
+        g_epolls[si].items[slot].used = true; g_epolls[si].items[slot].fd = fd;
+        g_epolls[si].items[slot].events = evmask; g_epolls[si].items[slot].data = data;
+        return 0;
+    }
+    if (op == (int)EPOLL_CTL_MOD)
+    {
+        if (found < 0) return (long)(-ENOENT);
+        g_epolls[si].items[found].events = evmask; g_epolls[si].items[found].data = data;
+        return 0;
+    }
+    return (long)(-EINVAL);
+}
+
+// epoll_wait(epfd, struct epoll_event*, maxevents, timeout) -- nr 232 (immediate)
+fn long lx_epoll_wait(ulong* a)
+{
+    int epfd = (int)a[0]; ulong out = a[1]; long maxev = (long)a[2];
+    if (!(epfd >= 0 && epfd < MAX_FDS && g_fd[epfd].used && g_fd[epfd].type == FD_EPOLL)) return (long)(-EBADF);
+    int si = g_epoll_of[epfd];
+    if (si < 0 || !g_epolls[si].used) return (long)(-EBADF);
+    long n = 0;
+    for (int i = 0; i < MAX_EPOLL_ITEM && n < maxev; i++)
+    {
+        if (!g_epolls[si].items[i].used) continue;
+        int fd = g_epolls[si].items[i].fd;
+        uint interest = g_epolls[si].items[i].events;
+        uint eff = 0;
+        if (fd >= 0 && fd < MAX_FDS && g_fd[fd].used) { eff = fd_ready_events(&g_fd[fd]) & interest; }
+        else { eff = (uint)(POLLERR & interest); }
+        if (eff != 0)
+        {
+            ulong base = out + (ulong)n * 12;    // packed epoll_event (12 bytes)
+            ((char*)base)[0] = (char)(eff & 0xFF); ((char*)base)[1] = (char)((eff >> 8) & 0xFF);
+            ((char*)base)[2] = (char)((eff >> 16) & 0xFF); ((char*)base)[3] = (char)((eff >> 24) & 0xFF);
+            st8(base + 4, g_epolls[si].items[i].data);
+            n++;
+        }
+    }
+    return n;
+}
+
 fn long lx_do_open(char* path, long flags)
 {
     char* p = path;
@@ -417,6 +537,12 @@ fn long lx_do_close(long fd)
         kfree((void*)g_fd[fd].buf);
         int peer = g_fd[fd].peer;
         if (peer >= 0 && peer < MAX_FDS && g_fd[peer].used && g_fd[peer].type == FD_SOCK) { g_fd[peer].peer = -1; }
+    }
+    else if (g_fd[fd].type == FD_EPOLL)
+    {
+        int si = g_epoll_of[fd];
+        if (si >= 0 && si < MAX_EPOLL_SETS) { g_epolls[si].used = false; }
+        g_epoll_of[fd] = -1;
     }
     else
     {
@@ -854,6 +980,10 @@ fn ulong xk_linux_dispatch(ulong nr, ulong* a) @export("xk_linux_dispatch")
     else if (nr == 43) { return (ulong)lx_accept(a); }                          // accept
     else if (nr == 7) { return (ulong)lx_poll(a); }                              // poll
     else if (nr == 271) { return (ulong)lx_poll(a); }                            // ppoll (timeout/sigmask ignored)
+    else if (nr == 291) { return (ulong)lx_epoll_create1(a); }                   // epoll_create1
+    else if (nr == 233) { return (ulong)lx_epoll_ctl(a); }                       // epoll_ctl
+    else if (nr == 232) { return (ulong)lx_epoll_wait(a); }                      // epoll_wait
+    else if (nr == 281) { return (ulong)lx_epoll_wait(a); }                      // epoll_pwait
     else if (nr == 56 || nr == 58) { return (ulong)(-ENOSYS); }  // clone/vfork (threads: later)
     else if (nr == 45 || nr == 44 || nr == 46 || nr == 54) { return (ulong)(-ENOSYS); } // sockets (sendmsg/recvmsg/etc)
     // Unknown syscall: print which one, then ENOSYS (keeps musl's failure visible).
