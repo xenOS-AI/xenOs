@@ -481,10 +481,25 @@ fn long lx_sendmsg(ulong* a)
     return total;
 }
 // recvmsg(fd, msghdr*, flags) -- nr 47 (fill msg_iov; no fd-passing yet)
+fn long lx_sock_read_nb(long fd, char* buf, ulong len)
+{
+    SockState* s = &g_sock[(int)fd];
+    if (s.len == 0) return (long)(-EAGAIN);      // MSG_DONTWAIT: never block
+    ulong got = 0;
+    while (got < len && s.len > 0)
+    {
+        ((char*)(ulong)buf)[got] = ((char*)(ulong)s.buf)[s.pos];
+        s.pos = (s.pos + 1) % s.cap;
+        s.len--;
+        got++;
+    }
+    return (long)got;
+}
 fn long lx_recvmsg(ulong* a)
 {
     long fd = (long)a[0];
     if (!sock_fd(fd)) return (long)(-EBADF);
+    bool nb = (a[2] & 0x40u) != 0;               // MSG_DONTWAIT
     ulong mh = a[1];
     ulong iov = lx_rd64(mh + 16);
     ulong iovlen = lx_rd64(mh + 24);
@@ -494,12 +509,13 @@ fn long lx_recvmsg(ulong* a)
         ulong base = lx_rd64(iov + i * 16);
         ulong l = lx_rd64(iov + i * 16 + 8);
         if (l == 0) continue;
-        long r = lx_sock_read(fd, (char*)(ulong)base, l);
-        if (r < 0) return r;
+        long r = nb ? lx_sock_read_nb(fd, (char*)(ulong)base, l) : lx_sock_read(fd, (char*)(ulong)base, l);
+        if (r < 0 && total == 0) return r;
+        if (r < 0) break;
         if (r == 0) break;
         total += r;
     }
-    ((char*)mh)[48] = (char)0; ((char*)mh)[49] = 0; ((char*)mh)[50] = 0; ((char*)mh)[51] = 0;   // msg_flags
+    ((char*)mh)[48] = (char)0; ((char*)mh)[49] = 0; ((char*)mh)[50] = 0; ((char*)mh)[51] = 0;
     return total;
 }
 // sendto(fd, buf, len, flags, ...) -- nr 44
