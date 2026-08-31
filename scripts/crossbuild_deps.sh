@@ -76,4 +76,23 @@ EOF
   ninja -C build && ninja -C build install
   cp build/src/libwayland-util.a "$SYS/lib/"
 fi
+
+if [[ "${1:-all}" == protocols || "${1:-all}" == all ]]; then
+  ver=1.32
+  cd "$SRC"
+  [ -d wayland-protocols-$ver ] || { curl -sSL -o wp.tgz https://gitlab.freedesktop.org/wayland/wayland-protocols/-/archive/$ver/wayland-protocols-$ver.tar.gz && tar xzf wp.tgz; }
+  rm -rf wayland-protocols-$ver/build && cd wayland-protocols-$ver
+  meson setup build --cross-file="$SRC/wl-cross.txt" --prefix="$SYS" -Dtests=false >/dev/null
+  ninja -C build install
+fi
+
+if [[ "${1:-all}" == pixman || "${1:-all}" == all ]]; then
+  ver=0.43.4
+  cd "$SRC"
+  [ -d pixman-$ver ] || { curl -sSL -o p.tgz https://www.cairographics.org/releases/pixman-$ver.tar.gz && tar xzf p.tgz; }
+  rm -rf pixman-$ver/build && cd pixman-$ver
+  meson setup build --cross-file="$SRC/wl-cross.txt" --prefix="$SYS" -Dtests=disabled \
+    -Ddemos=disabled -Dgtk=disabled -Ddefault_library=static >/dev/null
+  ninja -C build && ninja -C build install
+fi
 echo "cross deps installed to $SYS"
