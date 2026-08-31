@@ -20,8 +20,9 @@ const uint WLP_BUFFER  = 0;       // wl_shm_pool.create_buffer
 const uint WLSURF_ATTACH = 1;     // wl_surface.attach
 const uint WLSURF_COMMIT = 6;     // wl_surface.commit
 const uint WLSEAT_KB = 1;         // wl_seat.get_keyboard (new_id)
+const uint WLSEAT_PTR = 2;        // wl_seat.get_pointer (new_id)
 struct WlConn { bool used; uint srvfd; uint clifd; uint robj; uint cbid;
-                uint shm_id, comp_id, surf_id, pool_id, seat_id, kb_id;
+                uint shm_id, comp_id, surf_id, pool_id, seat_id, kb_id, ptr_id;
                 uint buf_base, bw, bh, bstride; bool attached; }
 WlConn[4] g_wl;
 uint g_wl_serial = 1;
@@ -86,6 +87,22 @@ fn void wl_emit_key(uint clifd, uint kb, uint key, uint state)
     wl_emit(clifd, &b[0], 24);
 }
 
+// wl_pointer.motion event (op0): time, x fixed, y fixed
+fn void wl_emit_ptr_motion(uint clifd, uint ptr, uint x, uint y)
+{
+    char[20] b;
+    wl_u32(&b[0], 0, ptr); wl_u16(&b[0], 4, 0); wl_u16(&b[0], 6, 20);
+    wl_u32(&b[0], 8, g_wl_serial++); wl_u32(&b[0], 12, x); wl_u32(&b[0], 16, y);
+    wl_emit(clifd, &b[0], 20);
+}
+// wl_pointer.button event (op2): serial, time, button, state
+fn void wl_emit_ptr_button(uint clifd, uint ptr, uint btn)
+{
+    char[24] b;
+    wl_u32(&b[0], 0, ptr); wl_u16(&b[0], 4, 2); wl_u16(&b[0], 6, 24);
+    wl_u32(&b[0], 8, g_wl_serial++); wl_u32(&b[0], 12, 0); wl_u32(&b[0], 16, btn); wl_u32(&b[0], 20, 1);
+    wl_emit(clifd, &b[0], 24);
+}
 fn int wl_find(uint srvfd)
 {
     for (int i = 0; i < 4; i++) { if (g_wl[i].used && g_wl[i].srvfd == srvfd) return i; }
@@ -93,7 +110,7 @@ fn int wl_find(uint srvfd)
 }
 fn void wl_register(uint srvfd, uint clifd)
 {
-    for (int i = 0; i < 4; i++) { if (!g_wl[i].used) { g_wl[i].used = true; g_wl[i].srvfd = srvfd; g_wl[i].clifd = clifd; g_wl[i].robj = 0; g_wl[i].cbid = 0; g_wl[i].shm_id = 0; g_wl[i].comp_id = 0; g_wl[i].seat_id = 0; g_wl[i].kb_id = 0; return; } }
+    for (int i = 0; i < 4; i++) { if (!g_wl[i].used) { g_wl[i].used = true; g_wl[i].srvfd = srvfd; g_wl[i].clifd = clifd; g_wl[i].robj = 0; g_wl[i].cbid = 0; g_wl[i].shm_id = 0; g_wl[i].comp_id = 0; g_wl[i].seat_id = 0; g_wl[i].kb_id = 0; g_wl[i].ptr_id = 0; return; } }
 }
 
 // Read a Wayland wire string arg at ring offset `o` (u32 len + bytes + NUL pad);
@@ -182,6 +199,14 @@ fn void wl_serve(int wix)
                 uint kc = wl_asc_keycode(kbd_pop());
                 if (kc != 0) { wl_emit_key(clifd, c.kb_id, kc, 1u); wl_emit_key(clifd, c.kb_id, kc, 0u); }
             }
+        }
+        else if (obj == c.seat_id && op == WLSEAT_PTR && ms >= 12)
+        {
+            c.ptr_id = wl_rd32(s, 8);
+            uint fx = (uint)((ulong)mouse_x << 16);     // wl_fixed from the LIVE PS/2-derived state
+            uint fy = (uint)((ulong)mouse_y << 16);
+            wl_emit_ptr_motion(clifd, c.ptr_id, fx, fy);
+            if ((mouse_buttons & 1u) != 0) wl_emit_ptr_button(clifd, c.ptr_id, 0x110u);
         }
         else if (obj == c.shm_id && op == WLS_POOL && ms >= 20)
         {

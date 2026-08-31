@@ -1647,6 +1647,7 @@ fn void linux_launch(ulong entry, ulong stack)
     if (e4_mount()) xk_puts("[linux] ext4 rootfs mounted\n");   // Phase C (secondary slave)
     wl_compositor_init();                            // Phase D: kernel Wayland compositor
     kbd_put('a');                                  // inject one real keypress into the kbd queue (as IRQ1 would)
+    mouse_x = 120; mouse_y = 80; mouse_buttons = 1;  // a real PS/2 mouse position (live state for wl_pointer)
     xk_mask_hw_irqs(1);      // keep device IRQs off while the ring-3 process runs
     xk_set_cr3(g_linux_pml4);
     xk_enter_ring3(entry, stack);
