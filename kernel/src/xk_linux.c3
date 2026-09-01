@@ -1010,7 +1010,7 @@ fn long lx_do_brk(ulong addr)
     return (long)g_user_brk;
 }
 
-fn long lx_do_mmap(ulong len, ulong flags, long fd_parm, ulong offset)
+fn long lx_do_mmap(ulong want_addr, ulong len, ulong flags, long fd_parm, ulong offset)
 {
     ulong want = (len + 4095) & ~((ulong)4095);
     if (want == 0) want = 4096;
@@ -1035,9 +1035,18 @@ fn long lx_do_mmap(ulong len, ulong flags, long fd_parm, ulong offset)
         // MAP_PRIVATE file-backed: what ld-musl uses to map a DT_NEEDED .so from disk.
         if (g_fd[fd_parm].type != FD_FILE) return (long)(-EBADF);
         if (offset > g_fd[fd_parm].len) return (long)(-EINVAL);
-        if (g_mmap_cur + want > LX_MMAP_END) return (long)(-ENOMEM);
-        ulong v = g_mmap_cur;
-        g_mmap_cur += want;
+        bool mpf = (flags & 0x10u) != 0 || want_addr != 0;   // MAP_FIXED, or a caller addr hint (ld-musl)
+        ulong v;
+        if (mpf)
+        {
+            v = want_addr & ~((ulong)4095);           // ld-musl's loader computed load address
+        }
+        else
+        {
+            if (g_mmap_cur + want > LX_MMAP_END) return (long)(-ENOMEM);
+            v = g_mmap_cur;
+            g_mmap_cur += want;
+        }
         // copy the file's bytes (identity phys==vaddr region) - tail zero-filled
         ulong srcoff = offset;
         ulong avail = g_fd[fd_parm].len - srcoff;
@@ -1513,7 +1522,7 @@ fn ulong xk_linux_dispatch(ulong nr, ulong* a) @export("xk_linux_dispatch")
     else if (nr == 39)      { return g_linux_pid; }
     else if (nr == 218)     { g_tid_addr = a[0]; return g_linux_pid; }
     else if (nr == 16)      { return (ulong)lx_ioctl(a); }         // ioctl
-    else if (nr == 9)       { return (ulong)lx_do_mmap(a[1], a[3], (long)a[4], a[5]); } // mmap (MAP_PRIVATE file / SHARED / anon)
+    else if (nr == 9)       { return (ulong)lx_do_mmap(a[0], a[1], a[3], (long)a[4], a[5]); } // mmap (MAP_PRIVATE file / SHARED / anon)
     else if (nr == 11)      { return 0; }                           // munmap
     else if (nr == 10)      { return 0; }                           // mprotect
     else if (nr == 77)      { return (ulong)lx_ftruncate(a); }               // ftruncate (/dev/shm)
