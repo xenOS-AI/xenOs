@@ -43,6 +43,7 @@ build_host_tool mkfat
 echo "[build] ext4read ext4 rootfs read-path self-test + test image (Phase C)"
 build_host_tool ext4read
 mkdir -p "$OUT/rootfs" "$OUT/rootfs/usr/lib"
+{ [ -f "$OUT/dynmain" ] && cp "$OUT/dynmain" "$OUT/rootfs/dynmain"; } # allocate FIRST -> contiguous extent
 printf 'hello from ext4 rootfs xenOS\n' > "$OUT/rootfs/MOTD.TXT"
 printf '# ext4 build test\n' > "$OUT/rootfs/README.md"
 printf 'libwayland bytecheck\x00\x01\x02\n' > "$OUT/rootfs/usr/lib/libwayland.so.0"
@@ -53,9 +54,10 @@ if command -v musl-gcc >/dev/null 2>&1; then
   musl-gcc -fPIC -shared -o "$OUT/libe1.so" "$ROOT/tools/e1/e1lib.c"
   musl-gcc -c -o "$OUT/e1lib.o" "$ROOT/tools/e1/e1lib.c"
   ar rcs "$OUT/libe1.a" "$OUT/e1lib.o"
-  # TEMPORARY E1: static main (musl -static, libe1.a linked in) so the kernel's
-  # working static loader runs it; the REAL dynamic-.so path is TODO (loader ABI).
-  musl-gcc -static -no-pie -o "$OUT/dynmain" "$ROOT/tools/e1/e1main.c" "$OUT/libe1.a"
+  # TEMPORARY E1: tiny freestanding no-libc _start (raw syscalls) so the rootfs file
+  # is ~2 blocks and the (buggy, large-file-truncating) extent reader reads it WHOLLY.
+  musl-gcc -static -nostdlib -no-pie -ffreestanding -fno-builtin -o "$OUT/dynmain" "$ROOT/tools/e1/rsmain.c"
+  # (the REAL E1 program links musl + libe1.a and needs the extent reader fixed: TODO)
   fi
 if [ -f "$OUT/libe1.so" ]; then
   cp "$OUT/libe1.so" "$OUT/rootfs/usr/lib/libe1.so"
@@ -63,8 +65,10 @@ if [ -f "$OUT/libe1.so" ]; then
   ln -sf libe1.so "$OUT/rootfs/usr/lib/libe1.so.0"
   echo "[build] staged E1 dynamic chain (dynmain + libe1.so) into the rootfs"
 fi
-# the dynamic interpreter = musl's libc.so, staged on the rootfs so /dynmain can run
-[ -f /usr/lib/musl/lib/libc.so ] && cp /usr/lib/musl/lib/libc.so "$OUT/rootfs/usr/lib/libc.so" && echo "[build] staged musl libc.so (interpreter) into the rootfs"
+# (tmp: NOT staging libc.so -- the 682KB interpret fragments the rootfs, splitting
+# dynmain across extents which the extent reader truncates; the static E1 main needs
+# no interp. TODO: the real dynamic-.so path will restage it + fix the extent reader.)
+rm -f "$OUT/rootfs/usr/lib/libc.so"   # drop stale 682KB interp that fragments allocation
 rm -f "$OUT/rootfs.ext4"
 mke2fs -q -F -t ext4 -b 1024 -O ^has_journal,^metadata_csum,^64bit,^uninit_bg,^flex_bg,^dir_index,^sparse_super,^resize_inode,^extra_isize,^huge_file,^large_file,^ext_attr,^dir_nlink -d "$OUT/rootfs" "$OUT/rootfs.ext4" 4096
 echo "    rootfs.ext4 = $(stat -c%s "$OUT/rootfs.ext4") bytes"
