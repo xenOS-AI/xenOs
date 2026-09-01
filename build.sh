@@ -48,6 +48,17 @@ printf '# ext4 build test\n' > "$OUT/rootfs/README.md"
 printf 'libwayland bytecheck\x00\x01\x02\n' > "$OUT/rootfs/usr/lib/libwayland.so.0"
 cp "$OUT/rootfs/MOTD.TXT" "$OUT/rootfs/usr/lib/motd.txt"
 ln -sf libwayland.so.0 "$OUT/rootfs/usr/lib/libwayland.so"
+# Phase E1: dynamic-shared-lib chain for the ext4 rootfs (a non-libc DT_NEEDED .so + dynamic main)
+if command -v musl-gcc >/dev/null 2>&1; then
+  musl-gcc -fPIC -shared -o "$OUT/libe1.so" "$ROOT/tools/e1/e1lib.c"
+  musl-gcc -o "$OUT/dynmain" "$ROOT/tools/e1/e1main.c" -L"$OUT" -le1
+fi
+if [ -f "$OUT/libe1.so" ]; then
+  cp "$OUT/libe1.so" "$OUT/rootfs/usr/lib/libe1.so"
+  cp "$OUT/dynmain"  "$OUT/rootfs/dynmain"
+  ln -sf libe1.so "$OUT/rootfs/usr/lib/libe1.so.0"
+  echo "[build] staged E1 dynamic chain (dynmain + libe1.so) into the rootfs"
+fi
 rm -f "$OUT/rootfs.ext4"
 mke2fs -q -F -t ext4 -b 1024 -O ^has_journal,^metadata_csum,^64bit,^uninit_bg,^flex_bg,^dir_index,^sparse_super,^resize_inode,^extra_isize,^huge_file,^large_file,^ext_attr,^dir_nlink -d "$OUT/rootfs" "$OUT/rootfs.ext4" 4096
 echo "    rootfs.ext4 = $(stat -c%s "$OUT/rootfs.ext4") bytes"
