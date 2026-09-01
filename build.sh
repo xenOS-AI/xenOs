@@ -49,20 +49,39 @@ printf '# ext4 build test\n' > "$OUT/rootfs/README.md"
 printf 'libwayland bytecheck\x00\x01\x02\n' > "$OUT/rootfs/usr/lib/libwayland.so.0"
 cp "$OUT/rootfs/MOTD.TXT" "$OUT/rootfs/usr/lib/motd.txt"
 ln -sf libwayland.so.0 "$OUT/rootfs/usr/lib/libwayland.so"
+# Phase E3: stage the SHARED musl GTK3 .so tree (built by crossbuild_shared.sh into
+# /home/timo/crossmusl/rootfs-libs/usr/lib) into the boot rootfs so the kernel
+# dynamic loader can resolve the app's DT_NEEDED chain from the ext4 rootfs.
+# This replaces the temp E1 static-only staging: the main is now a real dynamic
+# GTK program linked against these shared libs (musl __dls2 resolve at run time).
+STAGE_SO="${STAGE_SO:-/home/timo/crossmusl/rootfs-libs/usr/lib}"
+if [ -d "$STAGE_SO" ] && ls "$STAGE_SO/libgtk-3.so.0" >/dev/null 2>&1; then
+  cp -P "$STAGE_SO"/lib*.so* "$OUT/rootfs/usr/lib/"
+  # GTK needs shared-mime/icon/theme data only for full themes; the bare toolkit
+  # (gtk_init + gtk_window_new) runs without them.
+  echo "[build] staged shared GTK3 .so tree ($(ls "$STAGE_SO"/lib*.so* | wc -l) entries) into rootfs/usr/lib"
+fi
 # Phase E1: dynamic-shared-lib chain for the ext4 rootfs (a non-libc DT_NEEDED .so + dynamic main)
 if command -v musl-gcc >/dev/null 2>&1; then
   musl-gcc -fPIC -shared -o "$OUT/libe1.so" "$ROOT/tools/e1/e1lib.c"
   musl-gcc -c -o "$OUT/e1lib.o" "$ROOT/tools/e1/e1lib.c"
   ar rcs "$OUT/libe1.a" "$OUT/e1lib.o"
-  # TEMPORARY E1: tiny freestanding no-libc _start (raw syscalls) so the rootfs file
-  # is ~2 blocks and the (buggy, large-file-truncating) extent reader reads it WHOLLY.
-  # E2: now the extent reader is fixed (ee_block position + depth-1), so run a REAL
-  # static-musl cairo program from the rootfs (the big one stresses the reader).
-  musl-gcc -static -no-pie -O2 -s -I"$CROSSROOT/include/glib-2.0" -I"$CROSSROOT/lib/glib-2.0/include" \
-    -o "$OUT/dynmain" "$ROOT/tools/e1/u_glib.c" \
-    "$CROSSROOT/lib/libglib-2.0.a" "$CROSSROOT/lib/libpcre2-8.a" "$CROSSROOT/lib/libz.a" -lm -pthread
-  # (the REAL E1 program links musl + libe1.a and needs the extent reader fixed: TODO)
+  # E3: build the rootfs main as a DYNAMIC GTK app (tiny; the fat GTK is shared .so).
+  # Use cross pkg-config for the real include/lib flags (the manual -I list is easy to
+  # get wrong on the gdk/wayland subdirs; PKG_CONFIG_LIBDIR scopes it to the sysroot).
+  if PKG_CONFIG_LIBDIR="$CROSSROOT/lib/pkgconfig" PKG_CONFIG=/usr/bin/pkg-config \
+       musl-gcc -no-pie -O2 -o "$OUT/dynmain" "$ROOT/tools/e1/u_gtk.c" \
+       $(PKG_CONFIG_LIBDIR="$CROSSROOT/lib/pkgconfig" PKG_CONFIG=/usr/bin/pkg-config \
+         pkg-config --cflags gtk+-3.0) \
+       $(PKG_CONFIG_LIBDIR="$CROSSROOT/lib/pkgconfig" PKG_CONFIG=/usr/bin/pkg-config \
+         pkg-config --libs gtk+-3.0) \
+       -Wl,-rpath-link,"$CROSSROOT/lib" >/tmp/dynmain_link.log 2>&1; then
+    echo "[build] dynmain = dynamic GTK app (NEEDED $(readelf -d "$OUT/dynmain" 2>/dev/null | grep -c NEEDED) shared libs)"
+  else
+    echo "[build] dynmain GTK link FAILED:"; tail -8 /tmp/dynmain_link.log
   fi
+  # (fallback static cairo test if the GTK link ever regresses)
+fi
 if [ -f "$OUT/libe1.so" ]; then
   cp "$OUT/libe1.so" "$OUT/rootfs/usr/lib/libe1.so"
   cp "$OUT/dynmain"  "$OUT/rootfs/dynmain"
