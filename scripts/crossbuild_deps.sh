@@ -262,3 +262,9 @@ fi
 # libs (libgtk-3.a=52MB, libgdk-3.a) are BUILT; only the OPTIONAL input-method im-*.so
 # shared modules fail (static upstream .a lack -fPIC) — a bounded -fPIC rebuild.
 # E2 dependency tree + GTK3 core libraries: COMPLETE.
+# GTK3 manual install (ninja 'all' aborts on im-*.so): copy build/gtk|gdk/libgtk-
+# 3.a+libgdk-3.a + headers (incl. gdk/deprecated, gtk/deprecated, gtk/a11y, and the
+# GENERATED gdkconfig.h/gdkversionmacros.h from build/gdk) + gtk+-3.0.pc & gdk-3.0.pc
+# (fix prefix; gdk-3.0.pc Cflags needs -I.../gdk-3.0) + libepoxy.a + epoxy.pc.
+# A static-musl GTK app then LINKS (100MB ELF) and RUNS on the host:
+#   [e3] GTK 3.24.52, gtk_window_new OK.
