@@ -18,6 +18,7 @@ uint g_e4_ibtab;                  // group-0 inode-table block
 char[1024] g_e4_blk;              // 1024-byte block cache
 char[256]  g_e4_ino;              // current inode buffer
 char[4096] g_e4_dir;              // directory-scan scratch
+char[1024] g_e4_leaf;             // depth-1 extent-tree LEAF block cache
 
 fn uint e4_u16(ulong b, ulong o)
 {
@@ -33,6 +34,12 @@ fn uint e4_u32(ulong b, ulong o)
 fn void e4_block(uint blk)
 {
     ata_read_sectors(E4_BASE, E4_DRIVE, (ulong)blk * 2, 2, &g_e4_blk[0]);   // 2 x 512B sectors
+}
+// Read a depth-1 extent-tree LEAF block into g_e4_leaf (kept separate from g_e4_blk,
+// which holds file DATA blocks, so iterating a leaf's extents never clobbers its entries).
+fn void e4_leaf_block(uint blk)
+{
+    ata_read_sectors(E4_BASE, E4_DRIVE, (ulong)blk * 2, 2, &g_e4_leaf[0]);
 }
 
 fn bool e4_mount()
@@ -94,22 +101,67 @@ fn void e4_data(uint ino, char* out, uint max, uint* nout)
         return;
     }
     uint idx = 0;
-    uint off = 0;
-    while (off < size && off < max)
+    uint off = 0;    // highest file byte written so far (for the final count/holes)
+    uint depth = e4_u16((ulong)&g_e4_ino[0], 46);
+    if (depth == 0)
     {
-        uint lb, elen, ph;
-        if (!e4_extent(idx, &lb, &elen, &ph)) break;
-        for (uint k = 0; k < elen && off < size && off < max; k++)
+        // depth-0: leaf extents are inline in the inode i_block (at +52).
+        // Position each extent at its LOGICAL block (ee_block): sparse files skip
+        // zero runs, so bytes must land at ee_block*1024, leaving holes as zeros.
+        uint entries = e4_u16((ulong)&g_e4_ino[0], 42);
+        for (idx = 0; idx < entries; idx++)
         {
-            e4_block(ph);                                     // load data block
-            uint pos = off & 0x3FFu;                          // % 1024
-            uint take = 1024u - pos;
-            if (take > size - off) take = size - off;
-            if (take > max - off) take = max - off;
-            for (uint q = 0; q < take; q++) { out[off] = g_e4_blk[pos + q]; off++; }
-            ph++;
+            ulong e = (ulong)&g_e4_ino[0] + 52 + (ulong)idx * 12;
+            uint lb = e4_u32(e, 0);
+            uint elen = e4_u16(e, 4) & 0x7FFFu;
+            uint ph = e4_u32(e, 8);
+            for (uint k = 0; k < elen; k++)
+            {
+                uint dst = lb * 1024u + k * 1024u;
+                if (dst >= size || dst >= max) break;
+                e4_block(ph);
+                uint take = 1024u;
+                if (take > size - dst) take = size - dst;
+                if (take > max - dst) take = max - dst;
+                for (uint q = 0; q < take; q++) { out[dst + q] = g_e4_blk[q]; }
+                if (dst + take > off) off = dst + take;
+                ph++;
+            }
         }
-        idx++;
+    }
+    else
+    {
+        // depth-1: inode holds INTERIOR entries (ee_leaf_lo@4 | ee_leaf_hi@8<<16)
+        // pointing at LEAF blocks; walk each leaf's extents in logical order.
+        uint entries = e4_u16((ulong)&g_e4_ino[0], 42);
+        for (idx = 0; idx < entries; idx++)
+        {
+            ulong ie = (ulong)&g_e4_ino[0] + 52 + (ulong)idx * 12;
+            uint leaf_blk = e4_u32(ie, 4) | (e4_u16(ie, 8) << 16);
+            e4_leaf_block(leaf_blk);
+            if (e4_u16((ulong)&g_e4_leaf[0], 0) != 0xF30Au) continue;
+            if (e4_u16((ulong)&g_e4_leaf[0], 6) != 0) continue;   // deeper than depth-1: unsupported (TODO)
+            uint lent = e4_u16((ulong)&g_e4_leaf[0], 2);
+            for (uint li = 0; li < lent; li++)
+            {
+                ulong le = (ulong)&g_e4_leaf[0] + 12 + (ulong)li * 12;
+                uint lb = e4_u32(le, 0);
+                uint elen = e4_u16(le, 4) & 0x7FFFu;
+                uint ph = e4_u32(le, 8);
+                for (uint k = 0; k < elen; k++)
+                {
+                    uint dst = lb * 1024u + k * 1024u;
+                    if (dst >= size || dst >= max) break;
+                    e4_block(ph);
+                    uint take = 1024u;
+                    if (take > size - dst) take = size - dst;
+                    if (take > max - dst) take = max - dst;
+                    for (uint q = 0; q < take; q++) { out[dst + q] = g_e4_blk[q]; }
+                    if (dst + take > off) off = dst + take;
+                    ph++;
+                }
+            }
+        }
     }
     *nout = off;
 }
