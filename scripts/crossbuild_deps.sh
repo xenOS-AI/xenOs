@@ -211,3 +211,33 @@ fi
 # cairo.pc Requires gobject-2.0 glib-2.0 pixman-1 fontconfig freetype2 (NOT Requires.private --
 # meson links without --static so the transitive .a deps must be PUBLIC). musl C++ toolchain:
 # /tmp/x86_64-linux-musl-cross (musl.cc) provides g++ + musl libstdc++; wl-cross-cpp.txt + wl-cross-musccc.txt.
+
+if [[ "${1:-all}" == gdk-pixbuf || "${1:-all}" == all ]]; then # E2 image lib (glib; meson; disable mime sniffing+loaders; install lib manually - host TOOLS cross-link fails)
+  cd "$SRC"; [ -d gdk-pixbuf-2.42.12 ] || { curl -fsSL -o gb.txz "https://download.gnome.org/sources/gdk-pixbuf/2.42/gdk-pixbuf-2.42.12.tar.xz" && tar xJf gb.txz; }
+  cd gdk-pixbuf-2.42.12 && rm -rf build
+  PKG_CONFIG_LIBDIR="$SYS/lib/pkgconfig" PKG_CONFIG=/usr/bin/pkg-config meson setup build \
+    --cross-file="$SRC/../wl-cross-cpp.txt" --prefix="$SYS" -Ddefault_library=static \
+    -Dintrospection=disabled -Dtests=false -Dinstalled_tests=false -Dman=false -Ddocs=false \
+    -Dpng=disabled -Djpeg=disabled -Dtiff=disabled -Dbuiltin_loaders=none -Dgio_sniffing=false >/dev/null
+  ninja -C build # note: host TOOLS (csource...) fail to cross-link; that's fine
+  cp -f build/gdk-pixbuf/libgdk_pixbuf-2.0.a "$SYS/lib/"
+  mkdir -p "$SYS/include/gdk-pixbuf-2.0/gdk-pixbuf"; cp -f gdk-pixbuf/*.h "$SYS/include/gdk-pixbuf-2.0/gdk-pixbuf/"
+  # gdk-pixbuf-2.0.pc + wayland-protocols.pc are hand-written (see sysroot/lib/pkgconfig)
+fi
+if [[ "${1:-all}" == atk || "${1:-all}" == all ]]; then # E2 accessibility (glib)
+  cd "$SRC"; [ -d atk-2.38.0 ] || { curl -fsSL -o atk.txz "https://download.gnome.org/sources/atk/2.38/atk-2.38.0.tar.xz" && tar xJf atk.txz; }
+  cd atk-2.38.0 && rm -rf build
+  PKG_CONFIG_LIBDIR="$SYS/lib/pkgconfig" PKG_CONFIG=/usr/bin/pkg-config meson setup build \
+    --cross-file="$SRC/../wl-cross-cpp.txt" --prefix="$SYS" -Ddefault_library=static -Dintrospection=false >/dev/null
+  ninja -C build && ninja -C build install
+fi
+if [[ "${1:-all}" == gtk || "${1:-all}" == all ]]; then # E2/E3: GTK3 (needs wayland backend = our compositor)
+  cd "$SRC"; [ -d gtk-3.24.52 ] || { curl -fsSL -o gt.txz "https://download.gnome.org/sources/gtk/3.24/gtk-3.24.52.tar.xz" && tar xJf gt.txz; }
+  cd gtk-3.24.52 && rm -rf build
+  PKG_CONFIG_LIBDIR="$SYS/lib/pkgconfig" PKG_CONFIG=/usr/bin/pkg-config meson setup build \
+    --cross-file="$SRC/../wl-cross-cpp.txt" --prefix="$SYS" -Ddefault_library=static \
+    -Dx11_backend=false -Dwayland_backend=true -Dbroadway_backend=false -Dintrospection=false \
+    -Dgtk_doc=false -Dman=false -Ddemos=false -Dexamples=false -Dtests=false -Dinstalled_tests=false \
+    -Dtracker3=false -Dcolord=no -Dcloudproviders=false >/dev/null
+  ninja -C build && ninja -C build install
+fi
