@@ -241,3 +241,12 @@ if [[ "${1:-all}" == gtk || "${1:-all}" == all ]]; then # E2/E3: GTK3 (needs way
     -Dtracker3=false -Dcolord=no -Dcloudproviders=false >/dev/null
   ninja -C build && ninja -C build install
 fi
+# GTK3 build finds (all recorded): (a) meson cross-file c_args are NOT applied -> pass
+# -Dc_args=-I$SYS/include (single -I! comma-lists regress); (b) epoxy subproject needs
+# EGL headers -> copy host /usr/include/EGL/*,+KHR/* into $SYS/include (platform-neutral)
+# and -Dlibepoxy:glx=no -Dlibepoxy:x11=false -Dlibepoxy:egl=yes; (c) wayland backend needs
+# <linux/input-event-codes.h> (musl has none) -> staged in $INC/linux/; (d) gdk-pixbuf
+# manual install also needs generated gdk-pixbuf-features.h + gdk-pixbuf-enum-types.h
+# (build/gdk-pixbuf/*.h); (e) wayland-protocols.pc hand-written. GTK3 3.24.52 currently
+# compiles ~950/965 targets (iterating generated-header/include gaps) -- E2 deps DONE,
+# GTK3 compile completion + E3 (mesa + a GTK window on the kernel compositor) pending.
