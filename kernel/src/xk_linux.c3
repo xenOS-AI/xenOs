@@ -1855,8 +1855,10 @@ fn void linux_boot_exec()
 
     g_linux_pml4 = create_process_addrspace(LX_USER_START);
     if (g_linux_pml4 == 0) { xk_puts("[linux] no frames for address space\r\n"); umode_enter(); return; }
-    // mark user code+heap region and the stack region U/S
-    for (ulong v = LX_USER_START; v < LX_HEAP_END; v += (ulong)0x200000) { mark_user_pde(g_linux_pml4, v); }
+    // mark user code+heap region, the full low 1 GiB, and the stack region U/S
+    // (a wide identity-user space so ld-musl's loader mappings at ANY low address
+    //  -- incl. the ~455MB it picked for libe1.so -- are ring-3 accessible)
+    for (ulong v = LX_USER_START; v < 0x40000000ul; v += (ulong)0x200000) { mark_user_pde(g_linux_pml4, v); }
     for (ulong v = (ulong)0x0FC00000; v < LX_STACK_TOP; v += (ulong)0x200000) { mark_user_pde(g_linux_pml4, v); }
 
     // Prefer the dynamically-linked binary (loader + ld-musl interp); fall back
