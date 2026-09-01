@@ -166,6 +166,99 @@ fn void e4_data(uint ino, char* out, uint max, uint* nout)
     *nout = off;
 }
 
+// Offset-aware ext4 read: copy bytes [file_start .. file_start+max) of inode `ino`
+// into `out`, streaming blocks from the (depth-0 or depth-1) extent tree. Skips
+// blocks entirely before `file_start`; stops once past the window. Returns bytes
+// actually copied in *nout. Needed for the multi-MB .so (libgtk-3.so etc) that a
+// 64KB open cap / kernel-heap round-trip cannot fit -- file-backed mmap streams
+// each page directly into the identity user region.
+fn void e4_pread(uint ino, char* out, uint file_start, uint max, uint* nout)
+{
+    // SPARSE-FILE SAFETY: zero the whole window first so holes read as zeros, not
+    // uninitialized garbage (musl reads .dynstr/.dynsym which often sit past a hole).
+    for (uint z = 0; z < max && z < (uint)0x800000; z++) { out[z] = 0; }
+    uint mode = e4_mode(ino);
+    uint size = e4_size(ino);
+    if ((mode & 0xF000u) == 0xA000u && size <= 60)
+    {
+        *nout = 0;
+        for (uint k = 0; k < max; k++)
+        {
+            uint src = file_start + k;
+            if (src >= size) break;
+            out[k] = g_e4_ino[40 + src];
+            *nout = k + 1;
+        }
+        return;
+    }
+    uint copied = 0;
+    uint depth = e4_u16((ulong)&g_e4_ino[0], 46);
+    if (depth == 0)
+    {
+        uint entries = e4_u16((ulong)&g_e4_ino[0], 42);
+        for (uint idx = 0; idx < entries; idx++)
+        {
+            ulong e = (ulong)&g_e4_ino[0] + 52 + (ulong)idx * 12;
+            uint lb = e4_u32(e, 0);
+            uint elen = e4_u16(e, 4) & 0x7FFFu;
+            uint ph = e4_u32(e, 8);
+            for (uint k = 0; k < elen; k++)
+            {
+                uint dst = lb * 1024u + k * 1024u;
+                if (dst >= file_start + max) { k = elen; break; }
+                if (dst + 1024u > file_start)   // overlaps the window
+                {
+                    e4_block(ph);
+                    uint begin = dst > file_start ? dst : file_start;
+                    uint end = dst + 1024u < file_start + max ? dst + 1024u : file_start + max;
+                    if (end > size) end = size;
+                    for (uint q = begin; q < end; q++) { out[q - file_start] = g_e4_blk[q - dst]; }
+                    if (end > copied) copied = end;   // track HIGHEST covered offset
+                }
+                ph++;
+            }
+        }
+    }
+    else
+    {
+        uint entries = e4_u16((ulong)&g_e4_ino[0], 42);
+        for (uint idx = 0; idx < entries; idx++)
+        {
+            ulong ie = (ulong)&g_e4_ino[0] + 52 + (ulong)idx * 12;
+            uint leaf_blk = e4_u32(ie, 4) | (e4_u16(ie, 8) << 16);
+            e4_leaf_block(leaf_blk);
+            if (e4_u16((ulong)&g_e4_leaf[0], 0) != 0xF30Au) continue;
+            if (e4_u16((ulong)&g_e4_leaf[0], 6) != 0) continue;
+            uint lent = e4_u16((ulong)&g_e4_leaf[0], 2);
+            for (uint li = 0; li < lent; li++)
+            {
+                ulong le = (ulong)&g_e4_leaf[0] + 12 + (ulong)li * 12;
+                uint lb = e4_u32(le, 0);
+                uint elen = e4_u16(le, 4) & 0x7FFFu;
+                uint ph = e4_u32(le, 8);
+                for (uint k = 0; k < elen; k++)
+                {
+                    uint dst = lb * 1024u + k * 1024u;
+                    if (dst >= file_start + max) { k = elen; break; }
+                    if (dst + 1024u > file_start)
+                    {
+                        e4_block(ph);
+                        uint begin = dst > file_start ? dst : file_start;
+                        uint end = dst + 1024u < file_start + max ? dst + 1024u : file_start + max;
+                        if (end > size) end = size;
+                        for (uint q = begin; q < end; q++) { out[q - file_start] = g_e4_blk[q - dst]; }
+                        if (end > copied) copied = end;
+                    }
+                    ph++;
+                }
+            }
+        }
+    }
+    // `copied` is the HIGHEST file offset covered within the window (absolute);
+    // convert to a window-relative byte count for the caller's tail-zero-fill.
+    *nout = copied > file_start ? copied - file_start : 0;
+}
+
 // Linear-scan directory inode `ino` for `want`; writes child inode to `out_ino`.
 fn bool e4_dir_lookup(uint ino, char* want, uint* out_ino)
 {

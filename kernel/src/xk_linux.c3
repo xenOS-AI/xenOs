@@ -153,7 +153,7 @@ const uint FD_ZERO  = 5;   // /dev/zero
 const uint FD_SHM   = 6;   // /dev/shm tmpfs file (wl_shm pool primitive)
 const uint FD_EVENT = 7;   // eventfd (compositor main-loop primitive)
 struct LxFD { bool used; uint type; ulong buf; ulong cap; ulong len; ulong pos; int peer;
-              bool listener; char[24] spath; int[4] pending; uint pn; }
+              bool listener; char[24] spath; int[4] pending; uint pn; uint eino; }
 LxFD[MAX_FDS] g_fd;
 LxFD[MAX_FDS] g_saved_parent_fds;   // snapshot taken at fork() to restore the parent
 
@@ -848,16 +848,38 @@ fn long lx_do_open(char* path, long flags)
             uint mode = e4_mode(ino);
             if ((mode & 0xF000u) == 0x4000u) return (long)(-EISDIR);
             uint fsz = e4_size(ino);
-            uint cap2 = fsz + 1; if (cap2 < 256) cap2 = 256; if (cap2 > 65536) cap2 = 65536;
-            char* buf = (char*)kmalloc(cap2);
-            if (buf == null) return (long)(-ENOMEM);
-            uint n = 0;
-            e4_data(ino, buf, cap2, &n);
+            // Small files: load whole into a kernel-heap buffer (the classic path).
+            // Large files (multi-MB shared libs) CANNOT fit the kernel heap; instead
+            // record the ext4 inode on the fd and let file-backed mmap stream the
+            // blocks straight into the identity user region via e4_pread (see mmap).
+            uint cap2 = fsz + 1; if (cap2 < 256) cap2 = 256;
+            if (fsz <= 65536)
+            {
+                char* buf = (char*)kmalloc(cap2);
+                if (buf == null) return (long)(-ENOMEM);
+                uint n = 0;
+                e4_data(ino, buf, cap2, &n);
+                int fdi = -1;
+                for (fdi = 3; fdi < MAX_FDS; fdi++) { if (!g_fd[fdi].used) break; }
+                if (fdi >= MAX_FDS) { kfree((void*)buf); return (long)(-EMFILE); }
+                g_fd[fdi].used = true; g_fd[fdi].type = FD_FILE;
+                g_fd[fdi].buf = (ulong)buf; g_fd[fdi].len = n; g_fd[fdi].pos = 0;
+                g_fd[fdi].peer = -1; g_fd[fdi].eino = ino;   // keep ino so fstat dedups by dev/ino
+                xk_puts("[open] small fd="); xk_putdec(fdi); xk_puts(" ino="); xk_putdec((int)ino);
+                xk_puts(" fsz="); xk_putdec((int)fsz); xk_puts(" read="); xk_putdec((int)n);
+                xk_puts(" path="); xk_puts(p); xk_puts("\r\n");
+                return (long)fdi;
+            }
+            // large ext4 file: no heap buffer, remember the inode for streaming mmap
             int fdi = -1;
             for (fdi = 3; fdi < MAX_FDS; fdi++) { if (!g_fd[fdi].used) break; }
-            if (fdi >= MAX_FDS) { kfree((void*)buf); return (long)(-EMFILE); }
+            if (fdi >= MAX_FDS) return (long)(-EMFILE);
             g_fd[fdi].used = true; g_fd[fdi].type = FD_FILE;
-            g_fd[fdi].buf = (ulong)buf; g_fd[fdi].len = n; g_fd[fdi].pos = 0; g_fd[fdi].peer = -1;
+            g_fd[fdi].buf = 0; g_fd[fdi].len = (ulong)fsz; g_fd[fdi].pos = 0;
+            g_fd[fdi].peer = -1; g_fd[fdi].eino = ino;
+            xk_puts("[open] large ext4 fd="); xk_putdec(fdi);
+            xk_puts(" ino="); xk_putdec((int)ino); xk_puts(" fsz="); xk_putdec((int)fsz);
+            xk_puts(" path="); xk_puts(p); xk_puts("\r\n");
             return (long)fdi;
         }
     }
@@ -914,7 +936,9 @@ fn long lx_do_close(long fd)
     g_fd[fd].peer = -1;
     g_fd[fd].listener = false;
     g_fd[fd].pn = 0;
+    g_fd[fd].pending[0] = 0; g_fd[fd].pending[1] = 0; g_fd[fd].pending[2] = 0; g_fd[fd].pending[3] = 0;
     g_fd[fd].spath[0] = 0;
+    g_fd[fd].eino = 0;
     return 0;
 }
 
@@ -943,6 +967,16 @@ fn long lx_do_read(long fd, char* buf, ulong len)
     ulong l    = g_fd[fd].len;
     ulong avail = pos < l ? l - pos : 0;
     ulong n = len < avail ? len : avail;
+    if (n == 0) return 0;
+    uint eino = g_fd[fd].eino;
+    if (eino != 0)
+    {
+        // large ext4 file streamed from the inode (no heap buffer)
+        uint nout = 0;
+        e4_pread(eino, (char*)buf, (uint)pos, (uint)n, &nout);
+        g_fd[fd].pos = pos + (ulong)nout;
+        return (long)nout;
+    }
     for (ulong i = 0; i < n; i++) { ((char*)(ulong)buf)[i] = ((char*)g_fd[fd].buf)[pos + i]; }
     g_fd[fd].pos = pos + n;
     return (long)n;
@@ -1034,6 +1068,11 @@ fn long lx_do_mmap(ulong want_addr, ulong len, ulong flags, long fd_parm, ulong 
         }
         // MAP_PRIVATE file-backed: what ld-musl uses to map a DT_NEEDED .so from disk.
         if (g_fd[fd_parm].type != FD_FILE) return (long)(-EBADF);
+        xk_puts("[mmap] file-backed fd="); xk_putdec((int)fd_parm);
+        xk_puts(" eino="); xk_putdec((int)g_fd[fd_parm].eino);
+        xk_puts(" buflen="); xk_putdec((int)g_fd[fd_parm].len);
+        xk_puts(" len="); xk_putdec((int)len); xk_puts(" off="); xk_putdec((int)offset);
+        xk_puts("\r\n");
         if (offset > g_fd[fd_parm].len) return (long)(-EINVAL);
         bool mpf = (flags & 0x10u) != 0 || want_addr != 0;   // MAP_FIXED, or a caller addr hint (ld-musl)
         ulong v;
@@ -1047,11 +1086,32 @@ fn long lx_do_mmap(ulong want_addr, ulong len, ulong flags, long fd_parm, ulong 
             v = g_mmap_cur;
             g_mmap_cur += want;
         }
-        // copy the file's bytes (identity phys==vaddr region) - tail zero-filled
+        // copy the file's bytes (identity phys==vaddr region) - tail zero-filled.
+        // For a LARGE ext4 .so (no heap buffer, eino set) stream the blocks straight
+        // in with e4_pread (window = [srcoff, srcoff+ncopy)) so multi-MB libs load.
         ulong srcoff = offset;
         ulong avail = g_fd[fd_parm].len - srcoff;
         ulong ncopy = avail < want ? avail : want;
-        for (ulong i = 0; i < ncopy; i++) { ((char*)v)[i] = ((char*)(ulong)g_fd[fd_parm].buf)[srcoff + i]; }
+        uint eino = g_fd[fd_parm].eino;
+        if (eino != 0 && ncopy > 0)
+        {
+            uint nout = 0;
+            e4_pread(eino, (char*)v, (uint)srcoff, (uint)ncopy, &nout);
+            if (nout < ncopy) { for (ulong i = nout; i < ncopy; i++) { ((char*)v)[i] = 0; } }
+            xk_puts("[mmap] stream ino="); xk_putdec((int)eino);
+            xk_puts(" off="); xk_putdec((int)srcoff);
+            xk_puts(" want="); xk_putdec((int)want);
+            xk_puts(" got="); xk_putdec((int)nout);
+            ulong m0 = (ulong)(char)((char*)v)[0]; ulong m1 = (ulong)(char)((char*)v)[1];
+            ulong m2 = (ulong)(char)((char*)v)[2]; ulong m3 = (ulong)(char)((char*)v)[3];
+            xk_puts(" magic="); xk_puthex((m0<<24)|(m1<<16)|(m2<<8)|m3);
+            xk_puts(" v="); xk_puthex(v);
+            xk_puts("\r\n");
+        }
+        else
+        {
+            for (ulong i = 0; i < ncopy; i++) { ((char*)v)[i] = ((char*)(ulong)g_fd[fd_parm].buf)[srcoff + i]; }
+        }
         for (ulong i = ncopy; i < want; i++) { ((char*)v)[i] = 0; }
         for (ulong pg = v & ~(ulong)0x1FFFFF; pg <= (v + want) & ~(ulong)0x1FFFFF; pg += (ulong)0x200000)
         {
@@ -1069,13 +1129,17 @@ fn long lx_do_mmap(ulong want_addr, ulong len, ulong flags, long fd_parm, ulong 
         return (long)v;
     }
     if (g_mmap_cur + want > LX_MMAP_END) return (long)(-ENOMEM);
-    ulong v = g_mmap_cur;
-    g_mmap_cur += want;
-    for (ulong pg = v & ~(ulong)0x1FFFFF; pg <= (v + want) & ~(ulong)0x1FFFFF; pg += (ulong)0x200000)
+    // Honor MAP_FIXED / caller-address anonymous mappings (musl uses a fixed
+    // base-relative address to zero each .bss segment). Non-fixed: bump g_mmap_cur.
+    ulong va = (want_addr != 0) ? (want_addr & ~((ulong)4095)) : g_mmap_cur;
+    if (want_addr == 0) g_mmap_cur = va + want;
+    // Anonymous mappings MUST return zeros (musl relies on this to zero .bss).
+    for (ulong z = 0; z < want && z < (ulong)0x4000000; z++) { ((char*)va)[z] = 0; }
+    for (ulong pg = va & ~(ulong)0x1FFFFF; pg <= (va + want) & ~(ulong)0x1FFFFF; pg += (ulong)0x200000)
     {
         mark_user_pde(g_linux_pml4, pg);
     }
-    return (long)v;
+    return (long)va;
 }
 
 // ---- Phase A.2: fork() -- clone into an independent address space ----
@@ -1262,13 +1326,13 @@ fn bool lx_fat_find(char* path, ulong* size_out, bool* is_dir_out)
 }
 
 // Fill the x86-64 kernel 'struct stat' enough for POSIX programs (mode/size/ino...).
-fn void lx_stat_fill(char* sb, uint mode, ulong size, bool is_dir)
+fn void lx_stat_fill(char* sb, uint mode, ulong size, bool is_dir, ulong ino)
 {
     ulong full = is_dir ? (mode | 0x41EDu) : (mode | 0x81A4u);   // S_IFDIR|0755 or S_IFREG|0644
     ulong a = (ulong)sb;
     for (int i = 0; i < 144; i++) { ((char*)a)[i] = 0; }
     st8(a, 1);              // st_dev
-    st8(a + 8, 1);          // st_ino
+    st8(a + 8, ino ? ino : 1);          // st_ino (unique per file -- musl dedups DSOs by dev/ino!)
     st8(a + 16, 1);         // st_nlink
     for (int k = 0; k < 4; k++) { ((char*)a)[24 + k] = (char)((full >> (k * 8)) & 0xFF); }   // st_mode
     st8(a + 48, size);      // st_size
@@ -1286,15 +1350,15 @@ fn long lx_stat_path(char* path, char* sb)
     int vf = vf_classify(p);
     if (vf != VF_UNKNOWN)
     {
-        if (vf == VF_NULL || vf == VF_ZERO) { lx_stat_fill(sb, 0, 0, false); return 0; }
-        if (vf == VF_DIR) { lx_stat_fill(sb, 0, 0, true); return 0; }
-        if (vf == VF_PROC) { lx_stat_fill(sb, 0, 32, false); return 0; }
+        if (vf == VF_NULL || vf == VF_ZERO) { lx_stat_fill(sb, 0, 0, false, 0); return 0; }
+        if (vf == VF_DIR) { lx_stat_fill(sb, 0, 0, true, 0); return 0; }
+        if (vf == VF_PROC) { lx_stat_fill(sb, 0, 32, false, 0); return 0; }
     }
     if (xk_startswith(p, "dev/shm/"))
     {
         int sidx = shm_find(p);
         if (sidx < 0) return (long)(-ENOENT);
-        lx_stat_fill(sb, 0, g_shmfile[sidx].size, false);
+        lx_stat_fill(sb, 0, g_shmfile[sidx].size, false, 0);
         return 0;
     }
     if (g_e4)                                  // ext4 root filesystem
@@ -1304,21 +1368,21 @@ fn long lx_stat_path(char* path, char* sb)
         {
             uint mm = e4_mode(ino2);
             uint sze = e4_size(ino2);
-            lx_stat_fill(sb, 0, sze, (mm & 0xF000u) == 0x4000u);
+            lx_stat_fill(sb, 0, sze, (mm & 0xF000u) == 0x4000u, (ulong)ino2);
             return 0;
         }
     }
     ulong size = 0;
     bool isdir = false;
     if (!lx_fat_find(path, &size, &isdir)) return -ENOENT;
-    lx_stat_fill(sb, 0, size, isdir);
+    lx_stat_fill(sb, 0, size, isdir, 0);
     return 0;
 }
 
 fn long lx_stat_fd(long fd, char* sb)
 {
     if (fd < 0 || fd >= MAX_FDS || !g_fd[fd].used) return -EBADF;
-    lx_stat_fill(sb, 0, g_fd[fd].len, false);
+    lx_stat_fill(sb, 0, g_fd[fd].len, false, (ulong)g_fd[fd].eino);
     return 0;
 }
 
@@ -1511,9 +1575,15 @@ fn ulong xk_linux_dispatch(ulong nr, ulong* a) @export("xk_linux_dispatch")
                 return 0;                                    // unreached
             }
     else if (nr == 1)       { return (ulong)lx_do_write((long)a[0], (char*)(ulong)a[1], a[2]); }
-    else if (nr == 0)       { return (ulong)lx_do_read((long)a[0], (char*)(ulong)a[1], a[2]); }
+    else if (nr == 0)
+        {
+            long nr0 = lx_do_read((long)a[0], (char*)(ulong)a[1], a[2]);
+            xk_puts("[sc] read fd="); xk_putdec((int)a[0]); xk_puts(" len="); xk_putdec((int)a[2]);
+            xk_puts(" -> "); xk_putdec((int)nr0); xk_puts("\r\n");
+            return (ulong)nr0;
+        }
     else if (nr == 2)       { return (ulong)lx_do_open((char*)(ulong)a[0], (long)a[1]); }
-    else if (nr == 257)     { return (ulong)lx_do_open((char*)(ulong)a[1], (long)a[2]); }  // openat
+    else if (nr == 257)     { xk_puts("[sc] openat "); xk_puts((char*)(ulong)a[1]); xk_puts("\r\n"); return (ulong)lx_do_open((char*)(ulong)a[1], (long)a[2]); }  // openat
     else if (nr == 3)       { return (ulong)lx_do_close((long)a[0]); }
     else if (nr == 20)      { return (ulong)lx_do_writev((long)a[0], a[1], (int)a[2]); }
     else if (nr == 12)      { return (ulong)lx_do_brk(a[0]); }
@@ -1522,7 +1592,12 @@ fn ulong xk_linux_dispatch(ulong nr, ulong* a) @export("xk_linux_dispatch")
     else if (nr == 39)      { return g_linux_pid; }
     else if (nr == 218)     { g_tid_addr = a[0]; return g_linux_pid; }
     else if (nr == 16)      { return (ulong)lx_ioctl(a); }         // ioctl
-    else if (nr == 9)       { return (ulong)lx_do_mmap(a[0], a[1], a[3], (long)a[4], a[5]); } // mmap (MAP_PRIVATE file / SHARED / anon)
+    else if (nr == 9)
+        {
+            xk_puts("[sc] mmap fd="); xk_putdec((int)a[4]); xk_puts(" len="); xk_putdec((int)a[1]);
+            xk_puts(" off="); xk_putdec((int)a[5]); xk_puts(" flags="); xk_puthex(a[3]); xk_puts("\r\n");
+            return (ulong)lx_do_mmap(a[0], a[1], a[3], (long)a[4], a[5]);
+        } // mmap (MAP_PRIVATE file / SHARED / anon)
     else if (nr == 11)      { return 0; }                           // munmap
     else if (nr == 10)      { return 0; }                           // mprotect
     else if (nr == 77)      { return (ulong)lx_ftruncate(a); }               // ftruncate (/dev/shm)
@@ -1560,7 +1635,7 @@ fn ulong xk_linux_dispatch(ulong nr, ulong* a) @export("xk_linux_dispatch")
     else if (nr == 13 || nr == 14 || nr == 15) { return 0; }  // rt_sigaction/procmask/return stubs
     else if (nr == 4)      { return (ulong)lx_stat_path((char*)(ulong)a[0], (char*)(ulong)a[1]); }   // stat
     else if (nr == 6)      { return (ulong)lx_stat_path((char*)(ulong)a[0], (char*)(ulong)a[1]); }   // lstat
-    else if (nr == 5)      { return (ulong)lx_stat_fd((long)a[0], (char*)(ulong)a[1]); }              // fstat
+    else if (nr == 5)      { xk_puts("[sc] fstat fd="); xk_putdec((int)a[0]); xk_puts("\r\n"); return (ulong)lx_stat_fd((long)a[0], (char*)(ulong)a[1]); }              // fstat
     else if (nr == 262)    { return (ulong)lx_stat_path((char*)(ulong)a[1], (char*)(ulong)a[2]); }    // newfstatat
     else if (nr == 79)     // getcwd
     {
@@ -1589,7 +1664,10 @@ fn ulong xk_linux_dispatch(ulong nr, ulong* a) @export("xk_linux_dispatch")
     else if (nr == 35)     { return 0; }                                     // nanosleep
     else if (nr == 202)    { return 0; }                                     // futex
     else if (nr == 62 || nr == 234) { return 0; }                            // kill/tgkill
+    else if (nr == 200)     { return 0; }                            // tkill (single-threaded: no-op)
     else if (nr == 72)     { return 0; }                                     // fcntl
+    else if (nr == 118)    { return 0; }                                 // fsync
+    else if (nr == 324)    { return 0; }                                 // membarrier (glib atomic barrier)
     else if (nr == 24)     { return 0; }                                     // sched_yield
     else if (nr == 97)     // getrlimit
     {
@@ -1639,7 +1717,39 @@ fn ulong xk_linux_dispatch(ulong nr, ulong* a) @export("xk_linux_dispatch")
     else if (nr == 233) { return (ulong)lx_epoll_ctl(a); }                     // epoll_ctl
     else if (nr == 232) { return (ulong)lx_epoll_wait(a); }                    // epoll_wait
     else if (nr == 281) { return (ulong)lx_epoll_wait(a); }                      // epoll_pwait
-    else if (nr == 56 || nr == 58) { return (ulong)(-ENOSYS); }  // clone/vfork (threads: later)
+    else if (nr == 56 || nr == 58)
+    {
+        // clone/vfork (THREADS: minimal stub). The GTK app's pango/fontconfig init
+        // spawns a worker thread via musl pthread_create -> clone(CLONE_VM|CLONE_THREAD|...).
+        // Returning a fresh child TID to the parent is enough for musl to record the
+        // thread and for glib's g_thread_new() to succeed, so gtk_init()/window creation
+        // proceed (the worker body never runs -- acceptable for window-first; real
+        // threading is a TODO under the cooperative scheduler).
+        ulong t = g_next_pid_num++;
+        ulong fl = a[0];
+        ulong ptid = a[2];   // CLONE_PARENT_SETTID ptr (child's pid written *parent-side)
+        ulong cctid = a[4];  // CLONE_CHILD_CLEARTID / child tid ptr
+        if ((fl & 0x00100000ul) && ptid) { ((char*)(ulong)ptid)[0]=(char)(t&0xFF); ((char*)(ulong)ptid)[1]=(char)((t>>8)&0xFF); ((char*)(ulong)ptid)[2]=(char)((t>>16)&0xFF); ((char*)(ulong)ptid)[3]=(char)((t>>24)&0xFF); }
+        if ((fl & 0x01000000ul) && cctid) { ((char*)(ulong)cctid)[0]=(char)(t&0xFF); ((char*)(ulong)cctid)[1]=(char)((t>>8)&0xFF); ((char*)(ulong)cctid)[2]=(char)((t>>16)&0xFF); ((char*)(ulong)cctid)[3]=(char)((t>>24)&0xFF); }
+        // CLONE_SETTLS: load the thread's TLS base.
+        if ((fl & 0x00080000ul) && a[3]) { xk_wrmsr(0xC0000100, a[3]); }
+        return t;                                  // return in the PARENT with the child tid
+    }
+    else if (nr == 120)
+    {
+        // clone3 (glib >= 2.72 threads): struct clone_args { u64 flags,pidfd,child_tid,parent_tid,
+        // exit_signal,stack,stack_size,tls,set_tid,set_tid_size,cgroup }. Same minimal stub:
+        // mint a child TID so glib's g_thread_new() succeeds (worker body not run - window-first).
+        ulong ca = a[1];
+        ulong fl3 = rd_u64((char*)(ulong)ca, 0);
+        ulong p3  = rd_u64((char*)(ulong)ca, 24);   // parent_tid ptr
+        ulong c3  = rd_u64((char*)(ulong)ca, 16);   // child_tid ptr
+        ulong t   = g_next_pid_num++;
+        if (p3) { ((char*)(ulong)p3)[0]=(char)(t&0xFF); ((char*)(ulong)p3)[1]=(char)((t>>8)&0xFF); ((char*)(ulong)p3)[2]=(char)((t>>16)&0xFF); ((char*)(ulong)p3)[3]=(char)((t>>24)&0xFF); }
+        if (c3) { ((char*)(ulong)c3)[0]=(char)(t&0xFF); ((char*)(ulong)c3)[1]=(char)((t>>8)&0xFF); ((char*)(ulong)c3)[2]=(char)((t>>16)&0xFF); ((char*)(ulong)c3)[3]=(char)((t>>24)&0xFF); }
+        if ((fl3 & 0x00080000ul)) { ulong tls3 = rd_u64((char*)(ulong)ca, 56); if (tls3) xk_wrmsr(0xC0000100, tls3); }
+        return t;
+    }
     else if (nr == 44)      { return (ulong)lx_sendto(a); }                 // sendto
     else if (nr == 45)      { return (ulong)lx_recvfrom(a); }             // recvfrom
     else if (nr == 46)      { return (ulong)lx_sendmsg(a); }              // sendmsg (libwayland writes here)
