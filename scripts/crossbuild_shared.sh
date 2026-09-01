@@ -68,6 +68,33 @@ stage() { # stage <libstem...>
   [ "$found" = 1 ] && echo "  staged: $*"
 }
 
+# CROSS-CODEGEN-TOOL FIX (required once a package ships SHARED sysroot libs):
+# tools like glib-compile-resources are themselves musl-dynamic and need the
+# shared glib/gio on the loader path. DO NOT export LD_LIBRARY_PATH (it bleeds
+# into host glibc children like xmllint/gcc cc1). Bake an RPATH into every
+# cross-built ELF so they resolve the sysroot libs themselves.
+fix_cross_tools() {
+  [ -x "$(command -v patchelf)" ] || { echo "  WARN: patchelf missing, install with: sudo pacman -S patchelf"; return 0; }
+  for f in "$SYS"/bin/*; do
+    [ -x "$f" ] || continue
+    file -b "$f" 2>/dev/null | grep -q "ELF.*dynamically linked" || continue
+    readelf -d "$f" 2>/dev/null | grep -q "RPATH" || patchelf --set-rpath "$SYS/lib" "$f"
+  done
+  echo "  cross codegen tools RPATH'd to $SYS/lib"
+}
+
+# EPOXY HEADERS: the libepoxy meson subproject only generates egl_generated.h /
+# gl_generated.h at build time; when consumed via pkg-config (static .a) they are
+# never staged. Generate them into the sysroot include dir from the bundled registry.
+fix_epoxy_headers() {
+  local ep="$SRC/gtk-3.24.52/subprojects/libepoxy"
+  mkdir -p "$SYS/include/epoxy"
+  cp -f "$ep/include/epoxy/"*.h "$SYS/include/epoxy/" 2>/dev/null
+  ( cd "$ep" && python3 src/gen_dispatch.py --header --no-source \
+      --outputdir="$SYS/include/epoxy" registry/gl.xml registry/egl.xml >/dev/null 2>&1 )
+  echo "  epoxy/egl_generated.h + gl_generated.h generated into $SYS/include/epoxy"
+}
+
 # ---- bottom of the tree (plain C libs, fast) ----
 if [[ "$PKG" == all || "$PKG" == zlib ]]; then
   ( cd "$SRC/zlib-1.3.1" && export CC=musl-gcc && ./configure --prefix="$SYS" >/tmp/zlib_cfg.log 2>&1 \
@@ -152,6 +179,9 @@ fi
 if [[ "$PKG" == all || "$PKG" == glib ]]; then
   shared_meson glib glib-2.80.4 /home/timo/crossmusl/wl-cross.txt \
     "-Dlibmount=disabled -Dselinux=disabled -Dlibelf=disabled -Dtests=false -Dinstalled_tests=false -Dgtk_doc=false -Dman=false -Ddtrace=false -Dsystemtap=false -Dintrospection=disabled -Dnls=disabled -Dbsymbolic_functions=false"
+  # glib also ships the codegen tools in sysroot/bin -> RPATH them now so
+  # a later (shared) GTK build can run glib-compile-resources without LD_LIBRARY_PATH
+  fix_cross_tools
   stage libglib-2.0 libgobject-2.0 libgio-2.0 libgmodule-2.0 libgthread-2.0
 fi
 
@@ -231,6 +261,9 @@ if [[ "$PKG" == all || "$PKG" == gtk ]]; then
       -Dtests=false -Dinstalled_tests=false -Dtracker3=false -Dcolord=no -Dcloudproviders=false \
       -Dlibepoxy:glx=no -Dlibepoxy:x11=false -Dlibepoxy:egl=yes \
       >/tmp/gtk_cfg.log 2>&1 || { echo "GTK CFG"; tail -15 /tmp/gtk_cfg.log; exit 1; }
+    # gdk/gtk codegen emits gdkresources.c via glib-compile-resources (RPATH'd) and needs
+    # epoxy's generated headers (egl_generated.h/gl_generated.h) for <epoxy/egl.h>
+    fix_epoxy_headers
     ninja -C build >/tmp/gtk_make.log 2>&1 || { echo "GTK MAKE"; tail -25 /tmp/gtk_make.log; exit 1; }
     # install lib + headers manually (ninja 'all' aborts on im-*.so input modules)
     cp -f build/gtk/libgtk-3.so* build/gdk/libgdk-3.so* "$SYS/lib/"
