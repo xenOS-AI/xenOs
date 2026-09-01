@@ -56,6 +56,9 @@ ln -sf libwayland.so.0 "$OUT/rootfs/usr/lib/libwayland.so"
 # GTK program linked against these shared libs (musl __dls2 resolve at run time).
 STAGE_SO="${STAGE_SO:-/home/timo/crossmusl/rootfs-libs/usr/lib}"
 if [ -d "$STAGE_SO" ] && ls "$STAGE_SO/libgtk-3.so.0" >/dev/null 2>&1; then
+  # strip the shared musl libs (debug info is huge; the stripped tree ~26MB fits a 64MB rootfs)
+  for f in "$STAGE_SO"/lib*.so.*; do [ -f "$f" ] && strip --strip-unneeded "$f" 2>/dev/null; done
+  rm -f "$STAGE_SO"/libharfbuzz-subset.so*   # not in the DT_NEEDED closure
   cp -P "$STAGE_SO"/lib*.so* "$OUT/rootfs/usr/lib/"
   # GTK needs shared-mime/icon/theme data only for full themes; the bare toolkit
   # (gtk_init + gtk_window_new) runs without them.
@@ -93,7 +96,7 @@ fi
 # no interp. TODO: the real dynamic-.so path will restage it + fix the extent reader.)
 rm -f "$OUT/rootfs/usr/lib/libc.so"   # drop stale 682KB interp that fragments allocation
 rm -f "$OUT/rootfs.ext4"
-mke2fs -q -F -t ext4 -b 1024 -O ^has_journal,^metadata_csum,^64bit,^uninit_bg,^flex_bg,^dir_index,^sparse_super,^resize_inode,^extra_isize,^huge_file,^large_file,^ext_attr,^dir_nlink -d "$OUT/rootfs" "$OUT/rootfs.ext4" 4096
+mke2fs -q -F -t ext4 -b 1024 -O ^has_journal,^metadata_csum,^64bit,^uninit_bg,^flex_bg,^dir_index,^sparse_super,^resize_inode,^extra_isize,^huge_file,^large_file,^ext_attr,^dir_nlink -d "$OUT/rootfs" "$OUT/rootfs.ext4" 65536
 echo "    rootfs.ext4 = $(stat -c%s "$OUT/rootfs.ext4") bytes"
 echo "[build] ai_mock host AI provider server (C3, freestanding)"
 build_host_tool ai_mock
