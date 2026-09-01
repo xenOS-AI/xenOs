@@ -122,3 +122,18 @@ if [[ "${1:-all}" == freetype || "${1:-all}" == all ]]; then
   # take that (boot stalls before linux_launch) -- Phase E/F must host libs as SHARED
   # .so on the ext4 rootfs, not as one giant embedded static blob.
 fi
+
+if [[ "${1:-all}" == freetype-shared || "${1:-all}" == all ]]; then
+  # Phase E/F pivot: real DEps ride the rootfs as SHARED musl libs, not static blobs.
+  ver=2.13.3
+  cd "$SRC/freetype-$ver"
+  rm -rf build-musl-shared && mkdir build-musl-shared && cd build-musl-shared
+  CC=musl-gcc CPPFLAGS="-I$INC" ../configure --host=x86_64-linux-musl --prefix=/usr/local \
+    --enable-shared --disable-static --without-zlib --without-bzip2 --without-png \
+    --without-harfbuzz --without-brotli >/dev/null
+  make -j2
+  mkdir -p "${ROOTFS:-/home/timo/crossmusl/rootfs-libs}/usr/lib"
+  cp -L .libs/libfreetype.so* "${ROOTFS:-/home/timo/crossmusl/rootfs-libs}/usr/lib/" 2>/dev/null
+  rm -f "${ROOTFS:-/home/timo/crossmusl/rootfs-libs}/usr/lib/libfreetype.so"
+  echo "  -> libfreetype.so.6 staged for the rootfs (shared musl, SONAME-versioned)"
+fi
