@@ -156,3 +156,19 @@ if [[ "${1:-all}" == cairo || "${1:-all}" == all ]]; then # Phase E2: cairo 2D (
     --disable-png --disable-xlib --disable-gtk-doc >/dev/null
   make -j2 && make install
 fi
+
+if [[ "${1:-all}" == expat || "${1:-all}" == all ]]; then   # Phase E2: expat (fontconfig deps)
+  cd "$SRC"; [ -d expat-2.6.2 ] || { curl -fsSL -o ex.tgz "https://github.com/libexpat/libexpat/releases/download/R_2_6_2/expat-2.6.2.tar.gz" && tar xzf ex.tgz; }
+  cd expat-2.6.2 && CC=musl-gcc CPPFLAGS="-I$INC" ./configure --host=x86_64-linux-musl --prefix="$SYS" \
+    --enable-static --disable-shared --without-docbook --without-examples --without-tests >/dev/null
+  make -j2 && make install
+fi
+if [[ "${1:-all}" == fontconfig || "${1:-all}" == all ]]; then # Phase E2: fontconfig (freetype+expat; needs gperf on host!)
+  cd "$SRC"; [ -d fontconfig-2.15.0 ] || { curl -fsSL -o fc.txz "https://www.freedesktop.org/software/fontconfig/release/fontconfig-2.15.0.tar.xz" && tar xJf fc.txz; }
+  cd fontconfig-2.15.0 && rm -f config.cache
+  CC=musl-gcc CPPFLAGS="-I$INC -I$SYS/include" PKG_CONFIG="$SRC/../pkg-config-cross.sh" \
+    PKG_CONFIG_LIBDIR="$SYS/lib/pkgconfig" ./configure --host=x86_64-linux-musl --prefix="$SYS" \
+    --enable-static --disable-shared --disable-docs --disable-nls --enable-libxml2=no --enable-iconv=no >/dev/null
+  make -j2 && make install
+  # NOTE: needs host `gperf` (fcobjshash.h); install via: sudo pacman -S gperf
+fi
