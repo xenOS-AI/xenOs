@@ -1831,7 +1831,7 @@ fn bool linux_dyn_rootfs()
     uint mread = 0;
     e4_data(m_ino, mbuf, msize, &mread);
     ulong m_entry = 0; ulong m_phdr = 0; uint m_phnum = 0;
-    if (!linux_map_elf(mbuf, mread, 0, &m_entry, &m_phdr, &m_phnum)) { kfree(mbuf); return false; }
+    if (!linux_map_elf(mbuf, mread, LX_USER_START, &m_entry, &m_phdr, &m_phnum)) { kfree(mbuf); return false; }
     kfree(mbuf);
     uint i_ino = e4_resolve("/usr/lib/libc.so");           // musl libc == the dynamic linker
     if (i_ino == 0) { xk_puts("[linux] E1: no interpreter on rootfs\r\n"); return false; }
@@ -1867,7 +1867,7 @@ fn void linux_boot_exec()
     // mark user code+heap region, the full low 1 GiB, and the stack region U/S
     // (a wide identity-user space so ld-musl's loader mappings at ANY low address
     //  -- incl. the ~455MB it picked for libe1.so -- are ring-3 accessible)
-    for (ulong v = LX_USER_START; v < 0x40000000ul; v += (ulong)0x200000) { mark_user_pde(g_linux_pml4, v); }
+    for (ulong v = 0; v < 0x40000000ul; v += (ulong)0x200000) { mark_user_pde(g_linux_pml4, v); }
     for (ulong v = (ulong)0x0FC00000; v < LX_STACK_TOP; v += (ulong)0x200000) { mark_user_pde(g_linux_pml4, v); }
 
     // Prefer the dynamically-linked binary (loader + ld-musl interp); fall back
