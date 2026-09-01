@@ -51,8 +51,12 @@ ln -sf libwayland.so.0 "$OUT/rootfs/usr/lib/libwayland.so"
 # Phase E1: dynamic-shared-lib chain for the ext4 rootfs (a non-libc DT_NEEDED .so + dynamic main)
 if command -v musl-gcc >/dev/null 2>&1; then
   musl-gcc -fPIC -shared -o "$OUT/libe1.so" "$ROOT/tools/e1/e1lib.c"
-  musl-gcc -no-pie -o "$OUT/dynmain" "$ROOT/tools/e1/e1main.c" -L"$OUT" -le1   # ET_EXEC: no PIE bias
-fi
+  musl-gcc -c -o "$OUT/e1lib.o" "$ROOT/tools/e1/e1lib.c"
+  ar rcs "$OUT/libe1.a" "$OUT/e1lib.o"
+  # TEMPORARY E1: static main (musl -static, libe1.a linked in) so the kernel's
+  # working static loader runs it; the REAL dynamic-.so path is TODO (loader ABI).
+  musl-gcc -static -no-pie -o "$OUT/dynmain" "$ROOT/tools/e1/e1main.c" "$OUT/libe1.a"
+  fi
 if [ -f "$OUT/libe1.so" ]; then
   cp "$OUT/libe1.so" "$OUT/rootfs/usr/lib/libe1.so"
   cp "$OUT/dynmain"  "$OUT/rootfs/dynmain"

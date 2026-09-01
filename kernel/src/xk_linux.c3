@@ -1834,6 +1834,32 @@ fn bool linux_dyn_rootfs()
     // map at LX_USER_START, but we build the rootfs main -no-pie to use the clean path.
     ulong m_entry = 0; ulong m_phdr = 0; uint m_phnum = 0;
     if (!linux_map_elf(mbuf, mread, 0, &m_entry, &m_phdr, &m_phnum)) { kfree(mbuf); return false; }
+    // TEMPORARY: a STATIC rootfs main (no PT_INTERP) is launched directly by the
+    // working static path (dynmain is musl -static for now; the real dynamic-.so
+    // loader is TODO). PT_INTERP == 3.
+    bool had_interp = false;
+    {
+        ulong phoff = rd_u64(mbuf, 32);
+        ulong phent = rd_u16(mbuf, 54);
+        ulong pn = rd_u16(mbuf, 56);
+        for (ulong i = 0; i < pn; i++)
+        {
+            if (rd_u32(mbuf, (uint)(phoff + i * phent)) == 3) { had_interp = true; }
+        }
+    }
+    if (!had_interp)
+    {
+        ulong stk = 0;
+        if (linux_build_stack(m_phdr, m_entry, 0, m_phnum, &stk))
+        {
+            kfree(mbuf);
+            xk_puts("[linux] E1 rootfs STATIC main: entry@"); xk_puthex(m_entry); xk_puts("\r\n");
+            linux_launch(m_entry, stk);
+            return true;
+        }
+        kfree(mbuf);
+        return false;
+    }
     kfree(mbuf);
     uint i_ino = e4_resolve("/usr/lib/libc.so");           // musl libc == the dynamic linker
     if (i_ino == 0) { xk_puts("[linux] E1: no interpreter on rootfs\r\n"); return false; }
