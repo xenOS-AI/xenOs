@@ -253,3 +253,12 @@ fi
 # (i) wayland backend ALSO needs <linux/input.h> + <linux/input-event-codes.h> + the
 #     <linux/types.h>/<linux/limits.h> stubs staged into $SYS/include/linux/ (so one
 #     -Dc_args=-I$SYS/include serves them); gdkdevice-wayland.c includes linux/input.h.
+# GTK3 print/file backend NEEDS cairo pdf+ps+svg; svg needs png -> libpng (zlib).
+# cairo-with-png hits a 'bool typedef' in test/pdiff/pdiff.h under musl — patch the
+# header to drop `typedef int bool;` (cairo.h already provides bool via stdbool) and
+# add LDFLAGS=-L\$SYS/lib + pkg-config env so cairo's zlib/png checks pass. libpng
+# built with (also needs a -fPIC build if GTK input-module .so's are to link).
+# cairo.pc Libs must list -lpixman-1 -lpng for the GTK host TOOL links. GTK3 core
+# libs (libgtk-3.a=52MB, libgdk-3.a) are BUILT; only the OPTIONAL input-method im-*.so
+# shared modules fail (static upstream .a lack -fPIC) — a bounded -fPIC rebuild.
+# E2 dependency tree + GTK3 core libraries: COMPLETE.
