@@ -58,9 +58,9 @@ if command -v musl-gcc >/dev/null 2>&1; then
   # is ~2 blocks and the (buggy, large-file-truncating) extent reader reads it WHOLLY.
   # E2: now the extent reader is fixed (ee_block position + depth-1), so run a REAL
   # static-musl cairo program from the rootfs (the big one stresses the reader).
-  musl-gcc -static -no-pie -O2 -s -I"$CROSSROOT/include" -o "$OUT/dynmain" "$ROOT/tools/e1/u_fc.c" \
-    "$CROSSROOT/lib/libfontconfig.a" "$CROSSROOT/lib/libexpat.a" "$CROSSROOT/lib/libfreetype.a" \
-    "$CROSSROOT/lib/libz.a" -lm
+  musl-gcc -static -no-pie -O2 -s -I"$CROSSROOT/include/glib-2.0" -I"$CROSSROOT/lib/glib-2.0/include" \
+    -o "$OUT/dynmain" "$ROOT/tools/e1/u_glib.c" \
+    "$CROSSROOT/lib/libglib-2.0.a" "$CROSSROOT/lib/libpcre2-8.a" "$CROSSROOT/lib/libz.a" -lm -pthread
   # (the REAL E1 program links musl + libe1.a and needs the extent reader fixed: TODO)
   fi
 if [ -f "$OUT/libe1.so" ]; then

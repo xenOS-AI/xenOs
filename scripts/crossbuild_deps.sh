@@ -172,3 +172,19 @@ if [[ "${1:-all}" == fontconfig || "${1:-all}" == all ]]; then # Phase E2: fontc
   make -j2 && make install
   # NOTE: needs host `gperf` (fcobjshash.h); install via: sudo pacman -S gperf
 fi
+
+if [[ "${1:-all}" == pcre2 || "${1:-all}" == all ]]; then  # Phase E2: pcre2 (glib regex) - autotools, not meson
+  cd "$SRC"; [ -d pcre2-10.44 ] || { curl -fsSL -o pc.tgz "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.44/pcre2-10.44.tar.gz" && tar xzf pc.tgz; }
+  cd pcre2-10.44 && CC=musl-gcc CPPFLAGS="-I$INC" ./configure --host=x86_64-linux-musl --prefix="$SYS" \
+    --enable-static --disable-shared --disable-pcre2grep --disable-pcre2test >/dev/null
+  make -j2 && make install
+fi
+if [[ "${1:-all}" == glib || "${1:-all}" == all ]]; then  # Phase E2: glib (GTK foundation) - meson; needs host python3 'packaging'
+  cd "$SRC"; [ -d glib-2.80.4 ] || { curl -fsSL -o g.txz "https://download.gnome.org/sources/glib/2.80/glib-2.80.4.tar.xz" && tar xJf g.txz; }
+  cd glib-2.80.4 && rm -rf build
+  meson setup build --cross-file="$SRC/wl-cross.txt" --prefix="$SYS" -Ddefault_library=static \
+    -Dlibmount=disabled -Dselinux=disabled -Dlibelf=disabled -Dtests=false -Dinstalled_tests=false \
+    -Dgtk_doc=false -Dman=false -Ddtrace=false -Dsystemtap=false -Dintrospection=disabled \
+    -Dnls=disabled -Dbsymbolic_functions=false >/dev/null
+  ninja -C build && ninja -C build install
+fi
