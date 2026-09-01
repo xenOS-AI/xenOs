@@ -59,6 +59,8 @@ if [ -f "$OUT/libe1.so" ]; then
   ln -sf libe1.so "$OUT/rootfs/usr/lib/libe1.so.0"
   echo "[build] staged E1 dynamic chain (dynmain + libe1.so) into the rootfs"
 fi
+# the dynamic interpreter = musl's libc.so, staged on the rootfs so /dynmain can run
+[ -f /usr/lib/musl/lib/libc.so ] && cp /usr/lib/musl/lib/libc.so "$OUT/rootfs/usr/lib/libc.so" && echo "[build] staged musl libc.so (interpreter) into the rootfs"
 rm -f "$OUT/rootfs.ext4"
 mke2fs -q -F -t ext4 -b 1024 -O ^has_journal,^metadata_csum,^64bit,^uninit_bg,^flex_bg,^dir_index,^sparse_super,^resize_inode,^extra_isize,^huge_file,^large_file,^ext_attr,^dir_nlink -d "$OUT/rootfs" "$OUT/rootfs.ext4" 4096
 echo "    rootfs.ext4 = $(stat -c%s "$OUT/rootfs.ext4") bytes"
