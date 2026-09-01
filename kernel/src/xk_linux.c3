@@ -865,9 +865,6 @@ fn long lx_do_open(char* path, long flags)
                 g_fd[fdi].used = true; g_fd[fdi].type = FD_FILE;
                 g_fd[fdi].buf = (ulong)buf; g_fd[fdi].len = n; g_fd[fdi].pos = 0;
                 g_fd[fdi].peer = -1; g_fd[fdi].eino = ino;   // keep ino so fstat dedups by dev/ino
-                xk_puts("[open] small fd="); xk_putdec(fdi); xk_puts(" ino="); xk_putdec((int)ino);
-                xk_puts(" fsz="); xk_putdec((int)fsz); xk_puts(" read="); xk_putdec((int)n);
-                xk_puts(" path="); xk_puts(p); xk_puts("\r\n");
                 return (long)fdi;
             }
             // large ext4 file: no heap buffer, remember the inode for streaming mmap
@@ -877,9 +874,6 @@ fn long lx_do_open(char* path, long flags)
             g_fd[fdi].used = true; g_fd[fdi].type = FD_FILE;
             g_fd[fdi].buf = 0; g_fd[fdi].len = (ulong)fsz; g_fd[fdi].pos = 0;
             g_fd[fdi].peer = -1; g_fd[fdi].eino = ino;
-            xk_puts("[open] large ext4 fd="); xk_putdec(fdi);
-            xk_puts(" ino="); xk_putdec((int)ino); xk_puts(" fsz="); xk_putdec((int)fsz);
-            xk_puts(" path="); xk_puts(p); xk_puts("\r\n");
             return (long)fdi;
         }
     }
@@ -1068,11 +1062,6 @@ fn long lx_do_mmap(ulong want_addr, ulong len, ulong flags, long fd_parm, ulong 
         }
         // MAP_PRIVATE file-backed: what ld-musl uses to map a DT_NEEDED .so from disk.
         if (g_fd[fd_parm].type != FD_FILE) return (long)(-EBADF);
-        xk_puts("[mmap] file-backed fd="); xk_putdec((int)fd_parm);
-        xk_puts(" eino="); xk_putdec((int)g_fd[fd_parm].eino);
-        xk_puts(" buflen="); xk_putdec((int)g_fd[fd_parm].len);
-        xk_puts(" len="); xk_putdec((int)len); xk_puts(" off="); xk_putdec((int)offset);
-        xk_puts("\r\n");
         if (offset > g_fd[fd_parm].len) return (long)(-EINVAL);
         bool mpf = (flags & 0x10u) != 0 || want_addr != 0;   // MAP_FIXED, or a caller addr hint (ld-musl)
         ulong v;
@@ -1098,15 +1087,6 @@ fn long lx_do_mmap(ulong want_addr, ulong len, ulong flags, long fd_parm, ulong 
             uint nout = 0;
             e4_pread(eino, (char*)v, (uint)srcoff, (uint)ncopy, &nout);
             if (nout < ncopy) { for (ulong i = nout; i < ncopy; i++) { ((char*)v)[i] = 0; } }
-            xk_puts("[mmap] stream ino="); xk_putdec((int)eino);
-            xk_puts(" off="); xk_putdec((int)srcoff);
-            xk_puts(" want="); xk_putdec((int)want);
-            xk_puts(" got="); xk_putdec((int)nout);
-            ulong m0 = (ulong)(char)((char*)v)[0]; ulong m1 = (ulong)(char)((char*)v)[1];
-            ulong m2 = (ulong)(char)((char*)v)[2]; ulong m3 = (ulong)(char)((char*)v)[3];
-            xk_puts(" magic="); xk_puthex((m0<<24)|(m1<<16)|(m2<<8)|m3);
-            xk_puts(" v="); xk_puthex(v);
-            xk_puts("\r\n");
         }
         else
         {
@@ -1575,15 +1555,9 @@ fn ulong xk_linux_dispatch(ulong nr, ulong* a) @export("xk_linux_dispatch")
                 return 0;                                    // unreached
             }
     else if (nr == 1)       { return (ulong)lx_do_write((long)a[0], (char*)(ulong)a[1], a[2]); }
-    else if (nr == 0)
-        {
-            long nr0 = lx_do_read((long)a[0], (char*)(ulong)a[1], a[2]);
-            xk_puts("[sc] read fd="); xk_putdec((int)a[0]); xk_puts(" len="); xk_putdec((int)a[2]);
-            xk_puts(" -> "); xk_putdec((int)nr0); xk_puts("\r\n");
-            return (ulong)nr0;
-        }
+    else if (nr == 0)       { return (ulong)lx_do_read((long)a[0], (char*)(ulong)a[1], a[2]); }
     else if (nr == 2)       { return (ulong)lx_do_open((char*)(ulong)a[0], (long)a[1]); }
-    else if (nr == 257)     { xk_puts("[sc] openat "); xk_puts((char*)(ulong)a[1]); xk_puts("\r\n"); return (ulong)lx_do_open((char*)(ulong)a[1], (long)a[2]); }  // openat
+    else if (nr == 257)     { return (ulong)lx_do_open((char*)(ulong)a[1], (long)a[2]); }  // openat
     else if (nr == 3)       { return (ulong)lx_do_close((long)a[0]); }
     else if (nr == 20)      { return (ulong)lx_do_writev((long)a[0], a[1], (int)a[2]); }
     else if (nr == 12)      { return (ulong)lx_do_brk(a[0]); }
@@ -1594,8 +1568,6 @@ fn ulong xk_linux_dispatch(ulong nr, ulong* a) @export("xk_linux_dispatch")
     else if (nr == 16)      { return (ulong)lx_ioctl(a); }         // ioctl
     else if (nr == 9)
         {
-            xk_puts("[sc] mmap fd="); xk_putdec((int)a[4]); xk_puts(" len="); xk_putdec((int)a[1]);
-            xk_puts(" off="); xk_putdec((int)a[5]); xk_puts(" flags="); xk_puthex(a[3]); xk_puts("\r\n");
             return (ulong)lx_do_mmap(a[0], a[1], a[3], (long)a[4], a[5]);
         } // mmap (MAP_PRIVATE file / SHARED / anon)
     else if (nr == 11)      { return 0; }                           // munmap
@@ -1635,7 +1607,7 @@ fn ulong xk_linux_dispatch(ulong nr, ulong* a) @export("xk_linux_dispatch")
     else if (nr == 13 || nr == 14 || nr == 15) { return 0; }  // rt_sigaction/procmask/return stubs
     else if (nr == 4)      { return (ulong)lx_stat_path((char*)(ulong)a[0], (char*)(ulong)a[1]); }   // stat
     else if (nr == 6)      { return (ulong)lx_stat_path((char*)(ulong)a[0], (char*)(ulong)a[1]); }   // lstat
-    else if (nr == 5)      { xk_puts("[sc] fstat fd="); xk_putdec((int)a[0]); xk_puts("\r\n"); return (ulong)lx_stat_fd((long)a[0], (char*)(ulong)a[1]); }              // fstat
+    else if (nr == 5)      { return (ulong)lx_stat_fd((long)a[0], (char*)(ulong)a[1]); }              // fstat
     else if (nr == 262)    { return (ulong)lx_stat_path((char*)(ulong)a[1], (char*)(ulong)a[2]); }    // newfstatat
     else if (nr == 79)     // getcwd
     {
