@@ -108,3 +108,17 @@ if [[ "${1:-all}" == xkbcommon || "${1:-all}" == all ]]; then
   mkdir -p "$SYS/share/X11/xkb"   # xkb_context_new needs an existing data dir
 fi
 echo "cross deps installed to $SYS"
+if [[ "${1:-all}" == freetype || "${1:-all}" == all ]]; then
+  ver=2.13.3
+  cd "$SRC"
+  [ -d freetype-$ver ] || { curl -fsSL -o ft.tgz "https://download.savannah.gnu.org/releases/freetype/freetype-$ver.tar.gz" && tar xzf ft.tgz; }
+  rm -rf freetype-$ver/build-musl && cd freetype-$ver
+  mkdir build-musl && cd build-musl
+  CC=musl-gcc CPPFLAGS="-I$INC" ../configure --host=x86_64-linux-musl --prefix="$SYS" \
+    --enable-static --disable-shared --without-zlib --without-bzip2 --without-png \
+    --without-harfbuzz --without-brotli >/dev/null
+  make -j2 && make install
+  # NOTE: static libfreetype.a blobs are ~700KB+; the kernel's single-blob embed can't
+  # take that (boot stalls before linux_launch) -- Phase E/F must host libs as SHARED
+  # .so on the ext4 rootfs, not as one giant embedded static blob.
+fi
