@@ -250,3 +250,6 @@ fi
 # (build/gdk-pixbuf/*.h); (e) wayland-protocols.pc hand-written. GTK3 3.24.52 currently
 # compiles ~950/965 targets (iterating generated-header/include gaps) -- E2 deps DONE,
 # GTK3 compile completion + E3 (mesa + a GTK window on the kernel compositor) pending.
+# (i) wayland backend ALSO needs <linux/input.h> + <linux/input-event-codes.h> + the
+#     <linux/types.h>/<linux/limits.h> stubs staged into $SYS/include/linux/ (so one
+#     -Dc_args=-I$SYS/include serves them); gdkdevice-wayland.c includes linux/input.h.
