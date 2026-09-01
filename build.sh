@@ -91,10 +91,13 @@ if [ -f "$OUT/libe1.so" ]; then
   ln -sf libe1.so "$OUT/rootfs/usr/lib/libe1.so.0"
   echo "[build] staged E1 dynamic chain (dynmain + libe1.so) into the rootfs"
 fi
-# (tmp: NOT staging libc.so -- the 682KB interpret fragments the rootfs, splitting
-# dynmain across extents which the extent reader truncates; the static E1 main needs
-# no interp. TODO: the real dynamic-.so path will restage it + fix the extent reader.)
-rm -f "$OUT/rootfs/usr/lib/libc.so"   # drop stale 682KB interp that fragments allocation
+# The real dynamic-.so path: stage the musl libc (== dynamic loader) as /usr/lib/libc.so
+# on the rootfs so linux_dyn_rootfs finds the interpreter there (extent reader is fixed:
+# ee_block positioning + depth-1 trees, so a multi-extent 682KB libc reads fully).
+if [ -f /usr/lib/musl/lib/libc.so ]; then
+  cp -f /usr/lib/musl/lib/libc.so "$OUT/rootfs/usr/lib/libc.so"
+  echo "[build] staged musl libc.so (dynamic loader) on the rootfs"
+fi
 rm -f "$OUT/rootfs.ext4"
 mke2fs -q -F -t ext4 -b 1024 -O ^has_journal,^metadata_csum,^64bit,^uninit_bg,^flex_bg,^dir_index,^sparse_super,^resize_inode,^extra_isize,^huge_file,^large_file,^ext_attr,^dir_nlink -d "$OUT/rootfs" "$OUT/rootfs.ext4" 65536
 echo "    rootfs.ext4 = $(stat -c%s "$OUT/rootfs.ext4") bytes"
