@@ -188,3 +188,26 @@ if [[ "${1:-all}" == glib || "${1:-all}" == all ]]; then  # Phase E2: glib (GTK 
     -Dnls=disabled -Dbsymbolic_functions=false >/dev/null
   ninja -C build && ninja -C build install
 fi
+
+if [[ "${1:-all}" == harfbuzz || "${1:-all}" == all ]]; then # Phase E2: harfbuzz (C++!) via the prebuilt musl-cross g++ (musl.cc)
+  cd "$SRC"; [ -d harfbuzz-9.0.0 ] || { curl -fsSL -o hb.txz "https://github.com/harfbuzz/harfbuzz/releases/download/9.0.0/harfbuzz-9.0.0.tar.xz" && tar xJf hb.txz; }
+  cd harfbuzz-9.0.0 && rm -rf build
+  meson setup build --cross-file="$SRC/../wl-cross-musccc.txt" --prefix="$SYS" -Ddefault_library=static \
+    -Dglib=disabled -Dfreetype=disabled -Dcairo=disabled -Dgobject=disabled -Dicu=disabled \
+    -Dtests=disabled -Ddocs=disabled -Dutilities=disabled -Dintrospection=disabled >/dev/null
+  ninja -C build && ninja -C build install
+fi
+if [[ "${1:-all}" == pango || "${1:-all}" == all ]]; then # Phase E2: pango text-layout (glib+gobject+cairo+pixman+fontconfig+harfbuzz+freetype)
+  cd "$SRC"; [ -d pango-1.54.0 ] || { curl -fsSL -o p.txz "https://download.gnome.org/sources/pango/1.54/pango-1.54.0.tar.xz" && tar xJf p.txz; }
+  cd pango-1.54.0 && rm -rf build
+  meson setup build --cross-file="$SRC/../wl-cross-cpp.txt" --prefix="$SYS" \
+    -Ddefault_library=static -Dfontconfig=enabled -Dcairo=enabled -Dfreetype=enabled \
+    -Dlibthai=disabled -Dxft=disabled -Dintrospection=disabled -Dbuild-testsuite=false -Dgtk_doc=false >/dev/null
+  ninja -C build && ninja -C build install
+fi
+# NOTE cross-GNOME static pkg-config fixes (all in $SYS/lib/pkgconfig/): glib-2.0.pc
+# glib_mkenums/genmarshal -> $SYS/bin absolute; fontconfig.pc Cflags -I + Libs -lz -lexpat -lm;
+# freetype2.pc Cflags -I.../freetype2; cairo-ft.pc Requires cairo freetype2 fontconfig;
+# cairo.pc Requires gobject-2.0 glib-2.0 pixman-1 fontconfig freetype2 (NOT Requires.private --
+# meson links without --static so the transitive .a deps must be PUBLIC). musl C++ toolchain:
+# /tmp/x86_64-linux-musl-cross (musl.cc) provides g++ + musl libstdc++; wl-cross-cpp.txt + wl-cross-musccc.txt.
