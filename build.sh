@@ -51,7 +51,7 @@ ln -sf libwayland.so.0 "$OUT/rootfs/usr/lib/libwayland.so"
 # Phase E1: dynamic-shared-lib chain for the ext4 rootfs (a non-libc DT_NEEDED .so + dynamic main)
 if command -v musl-gcc >/dev/null 2>&1; then
   musl-gcc -fPIC -shared -o "$OUT/libe1.so" "$ROOT/tools/e1/e1lib.c"
-  musl-gcc -o "$OUT/dynmain" "$ROOT/tools/e1/e1main.c" -L"$OUT" -le1
+  musl-gcc -no-pie -o "$OUT/dynmain" "$ROOT/tools/e1/e1main.c" -L"$OUT" -le1   # ET_EXEC: no PIE bias
 fi
 if [ -f "$OUT/libe1.so" ]; then
   cp "$OUT/libe1.so" "$OUT/rootfs/usr/lib/libe1.so"

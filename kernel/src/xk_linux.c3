@@ -1830,8 +1830,10 @@ fn bool linux_dyn_rootfs()
     if (mbuf == null) return false;
     uint mread = 0;
     e4_data(m_ino, mbuf, msize, &mread);
+    // map at base 0 (ET_EXEC: absolute vaddrs, no load-bias math). PIE/ET_DYN would
+    // map at LX_USER_START, but we build the rootfs main -no-pie to use the clean path.
     ulong m_entry = 0; ulong m_phdr = 0; uint m_phnum = 0;
-    if (!linux_map_elf(mbuf, mread, LX_USER_START, &m_entry, &m_phdr, &m_phnum)) { kfree(mbuf); return false; }
+    if (!linux_map_elf(mbuf, mread, 0, &m_entry, &m_phdr, &m_phnum)) { kfree(mbuf); return false; }
     kfree(mbuf);
     uint i_ino = e4_resolve("/usr/lib/libc.so");           // musl libc == the dynamic linker
     if (i_ino == 0) { xk_puts("[linux] E1: no interpreter on rootfs\r\n"); return false; }
