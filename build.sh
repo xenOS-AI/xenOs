@@ -56,7 +56,11 @@ if command -v musl-gcc >/dev/null 2>&1; then
   ar rcs "$OUT/libe1.a" "$OUT/e1lib.o"
   # TEMPORARY E1: tiny freestanding no-libc _start (raw syscalls) so the rootfs file
   # is ~2 blocks and the (buggy, large-file-truncating) extent reader reads it WHOLLY.
-  musl-gcc -static -nostdlib -no-pie -ffreestanding -fno-builtin -o "$OUT/dynmain" "$ROOT/tools/e1/rsmain.c"
+  # E2: now the extent reader is fixed (ee_block position + depth-1), so run a REAL
+  # static-musl cairo program from the rootfs (the big one stresses the reader).
+  musl-gcc -static -no-pie -O2 -s -I"$CROSSROOT/include" -o "$OUT/dynmain" "$ROOT/tools/e1/u_cairo.c" \
+    "$CROSSROOT/lib/libcairo.a" "$CROSSROOT/lib/libpixman-1.a" "$CROSSROOT/lib/libz.a" \
+    "$CROSSROOT/lib/libfreetype.a" -lm
   # (the REAL E1 program links musl + libe1.a and needs the extent reader fixed: TODO)
   fi
 if [ -f "$OUT/libe1.so" ]; then

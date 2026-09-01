@@ -1825,7 +1825,7 @@ fn bool linux_dyn_rootfs()
     uint m_ino = e4_resolve("/dynmain");
     if (m_ino == 0) return false;
     uint msize = e4_size(m_ino);
-    if (msize == 0 || msize > 0x100000) return false;
+    if (msize == 0 || msize > 0x4000000u) return false;   // allow up to 64 MiB rootfs mains
     char* mbuf = (char*)kmalloc((ulong)msize + 16);
     if (mbuf == null) return false;
     uint mread = 0;

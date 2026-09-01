@@ -137,3 +137,22 @@ if [[ "${1:-all}" == freetype-shared || "${1:-all}" == all ]]; then
   rm -f "${ROOTFS:-/home/timo/crossmusl/rootfs-libs}/usr/lib/libfreetype.so"
   echo "  -> libfreetype.so.6 staged for the rootfs (shared musl, SONAME-versioned)"
 fi
+
+if [[ "${1:-all}" == zlib || "${1:-all}" == all ]]; then   # Phase E2: zlib (cairo/pango/fontconfig dep)
+  cd "$SRC"; [ -d zlib-1.3.1 ] || { curl -fsSL -o z.tgz "https://github.com/madler/zlib/archive/refs/tags/v1.3.1.tar.gz" && tar xzf z.tgz; }
+  cd zlib-1.3.1 && CC=musl-gcc AR=ar RANLIB=ranlib ./configure --static --prefix="$SYS" >/dev/null && make -j2 && make install
+  cat > "$SYS/lib/pkgconfig/zlib.pc" <<'PC'
+prefix=/home/timo/crossmusl/sysroot; exec_prefix=${prefix}; libdir=${exec_prefix}/lib; includedir=${prefix}/include
+Name: zlib; Description: zlib static musl; Version: 1.3.1; Libs: -L${libdir} -lz; Cflags: -I${includedir}
+PC
+fi
+if [[ "${1:-all}" == cairo || "${1:-all}" == all ]]; then # Phase E2: cairo 2D (pixman+zlib+freetype)
+  cd "$SRC"; [ -d cairo-1.16.0 ] || { curl -fsSL -o c.txz "https://www.cairographics.org/releases/cairo-1.16.0.tar.xz" && tar xJf c.txz; }
+  cd cairo-1.16.0 && rm -f config.cache
+  CC=musl-gcc CPPFLAGS="-I$INC -I$SYS/include" PKG_CONFIG_LIBDIR="$SYS/lib/pkgconfig" \
+    PKG_CONFIG="$SRC/../pkg-config-cross.sh" ./configure --host=x86_64-linux-musl --prefix="$SYS" \
+    --enable-static --disable-shared --with-x=no --enable-script=no --enable-interpreter=no \
+    --enable-gobject=no --enable-tests=no --disable-pdf --disable-ps --disable-svg \
+    --disable-png --disable-xlib --disable-gtk-doc >/dev/null
+  make -j2 && make install
+fi
