@@ -533,7 +533,10 @@ xk_linux_syscall_init:
     wrmsr
     mov ecx, 0xC0000081                    ; STAR
     mov eax, 0x00000000
-    mov edx, 0x00180028                    ; [63:48]=kernel cs 0x18, [47:32]=user cs 0x28
+    ; [63:48]=0x001B (SYSRET base -> user cs 0x2B; unused as we iretq), [47:32]=0x0018
+    ; (SYSCALL cs = KERNEL code64 0x18). The old value [47:32]=0x28 loaded the USER
+    ; code selector (GDT5, DPL3) at syscall entry; 0x18 is the correct ring-0 entry.
+    mov edx, 0x001B0018
     wrmsr
     mov ecx, 0xC0000082                    ; LSTAR
     lea rax, [rel syscall_entry]
