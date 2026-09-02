@@ -36,6 +36,7 @@ const ulong LX_MMAP_END   = 0x0FC00000;   // arena end (252 MiB)
 ulong g_linux_pml4;                       // this process's CR3
 ulong g_user_brk;                         // program break (brk)
 ulong g_mmap_cur = LX_MMAP_BASE;          // next anonymous mmap address
+ulong g_map_end  = LX_MMAP_BASE;          // high-water mark of all mapped guest user regions
 bool[256] g_shared_slot;                   // user-arena 2 MiB slots marked MAP_SHARED
 ulong g_linux_pid = 1;
 ulong g_tid_addr = 0;
@@ -1063,11 +1064,19 @@ fn long lx_do_mmap(ulong want_addr, ulong len, ulong flags, long fd_parm, ulong 
         // MAP_PRIVATE file-backed: what ld-musl uses to map a DT_NEEDED .so from disk.
         if (g_fd[fd_parm].type != FD_FILE) return (long)(-EBADF);
         if (offset > g_fd[fd_parm].len) return (long)(-EINVAL);
-        bool mpf = (flags & 0x10u) != 0 || want_addr != 0;   // MAP_FIXED, or a caller addr hint (ld-musl)
+        bool fixed = (flags & 0x10u) != 0;      // MAP_FIXED
         ulong v;
-        if (mpf)
+        if (fixed)
         {
-            v = want_addr & ~((ulong)4095);           // ld-musl's loader computed load address
+            v = want_addr & ~((ulong)4095);
+        }
+        else if (want_addr != 0)
+        {
+            // Non-MAP_FIXED hint (musl's loader guess): honor it only if it is
+            // FREE (>= g_map_end, i.e. not inside an already-mapped lib); otherwise
+            // place it above every mapped region so it cannot collide with a .so.
+            ulong hinted = want_addr & ~((ulong)4095);
+            v = (hinted < g_map_end) ? g_map_end : hinted;
         }
         else
         {
@@ -1075,6 +1084,8 @@ fn long lx_do_mmap(ulong want_addr, ulong len, ulong flags, long fd_parm, ulong 
             v = g_mmap_cur;
             g_mmap_cur += want;
         }
+        if (v + want > g_mmap_cur) { g_mmap_cur = v + want; }
+        if (v + want > g_map_end)  { g_map_end = v + want; }
         // copy the file's bytes (identity phys==vaddr region) - tail zero-filled.
         // For a LARGE ext4 .so (no heap buffer, eino set) stream the blocks straight
         // in with e4_pread (window = [srcoff, srcoff+ncopy)) so multi-MB libs load.
@@ -1111,8 +1122,23 @@ fn long lx_do_mmap(ulong want_addr, ulong len, ulong flags, long fd_parm, ulong 
     if (g_mmap_cur + want > LX_MMAP_END) return (long)(-ENOMEM);
     // Honor MAP_FIXED / caller-address anonymous mappings (musl uses a fixed
     // base-relative address to zero each .bss segment). Non-fixed: bump g_mmap_cur.
-    ulong va = (want_addr != 0) ? (want_addr & ~((ulong)4095)) : g_mmap_cur;
-    if (want_addr == 0) g_mmap_cur = va + want;
+    ulong va;
+    if ((flags & 0x10ul) != 0)          // MAP_FIXED
+    {
+        va = want_addr & ~((ulong)4095);
+    }
+    else if (want_addr != 0)
+    {
+        // Non-MAP_FIXED hint: honor only if free; else place above all mappings.
+        ulong hinted = want_addr & ~((ulong)4095);
+        va = (hinted < g_map_end) ? g_map_end : hinted;
+    }
+    else
+    {
+        va = g_mmap_cur;
+    }
+    if (va + want > g_mmap_cur) { g_mmap_cur = va + want; }
+    if (va + want > g_map_end)  { g_map_end = va + want; }
     // Anonymous mappings MUST return zeros (musl relies on this to zero .bss).
     for (ulong z = 0; z < want && z < (ulong)0x4000000; z++) { ((char*)va)[z] = 0; }
     for (ulong pg = va & ~(ulong)0x1FFFFF; pg <= (va + want) & ~(ulong)0x1FFFFF; pg += (ulong)0x200000)
