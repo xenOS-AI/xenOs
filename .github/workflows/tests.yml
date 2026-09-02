@@ -19,8 +19,8 @@ jobs:
       - name: Install the C3 compiler
         run: |
           curl --fail --location --silent --show-error https://github.com/c3lang/c3c/releases/download/v0.8.3/c3-linux.tar.gz | sudo tar -xz -C /opt
-          echo /opt/c3/c3c >> "$GITHUB_PATH"
-          /opt/c3/c3c/c3c --version
+          echo /opt/c3 >> "$GITHUB_PATH"
+          /opt/c3/c3c --version
       - name: Run C3 unit tests
         run: ./scripts/test.sh
 
@@ -35,7 +35,7 @@ jobs:
       - name: Install the C3 compiler
         run: |
           curl --fail --location --silent --show-error https://github.com/c3lang/c3c/releases/download/v0.8.3/c3-linux.tar.gz | sudo tar -xz -C /opt
-          echo /opt/c3/c3c >> "$GITHUB_PATH"
+          echo /opt/c3 >> "$GITHUB_PATH"
       - name: Build boot image
         run: ./build.sh
       - name: Verify a headless QEMU boot
