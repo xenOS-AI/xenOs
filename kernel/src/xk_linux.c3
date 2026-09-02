@@ -1724,29 +1724,20 @@ fn ulong xk_linux_dispatch(ulong nr, ulong* a) @export("xk_linux_dispatch")
         // proceed (the worker body never runs -- acceptable for window-first; real
         // threading is a TODO under the cooperative scheduler).
         ulong t = g_next_pid_num++;
-        ulong fl = a[0];
-        ulong ptid = a[2];   // CLONE_PARENT_SETTID ptr (child's pid written *parent-side)
-        ulong cctid = a[4];  // CLONE_CHILD_CLEARTID / child tid ptr
-        if ((fl & 0x00100000ul) && ptid) { ((char*)(ulong)ptid)[0]=(char)(t&0xFF); ((char*)(ulong)ptid)[1]=(char)((t>>8)&0xFF); ((char*)(ulong)ptid)[2]=(char)((t>>16)&0xFF); ((char*)(ulong)ptid)[3]=(char)((t>>24)&0xFF); }
-        if ((fl & 0x01000000ul) && cctid) { ((char*)(ulong)cctid)[0]=(char)(t&0xFF); ((char*)(ulong)cctid)[1]=(char)((t>>8)&0xFF); ((char*)(ulong)cctid)[2]=(char)((t>>16)&0xFF); ((char*)(ulong)cctid)[3]=(char)((t>>24)&0xFF); }
-        // CLONE_SETTLS: load the thread's TLS base.
-        if ((fl & 0x00080000ul) && a[3]) { xk_wrmsr(0xC0000100, a[3]); }
+        // Minimal stub: mint a TID for musl to record the thread. Do NOT write the
+        // TID into the caller's parent/child tid pointers (they can land inside a
+        // mapped .so's code region and clobber e.g. gtk_parse_args), and do NOT
+        // write MSR_FS_BASE on CLONE_SETTLS (it would corrupt the main thread's
+        // %fs:0x28 canary and trip __stack_chk_fail). The worker body never runs.
         return t;                                  // return in the PARENT with the child tid
     }
     else if (nr == 120)
     {
-        // clone3 (glib >= 2.72 threads): struct clone_args { u64 flags,pidfd,child_tid,parent_tid,
-        // exit_signal,stack,stack_size,tls,set_tid,set_tid_size,cgroup }. Same minimal stub:
-        // mint a child TID so glib's g_thread_new() succeeds (worker body not run - window-first).
-        ulong ca = a[1];
-        ulong fl3 = rd_u64((char*)(ulong)ca, 0);
-        ulong p3  = rd_u64((char*)(ulong)ca, 24);   // parent_tid ptr
-        ulong c3  = rd_u64((char*)(ulong)ca, 16);   // child_tid ptr
-        ulong t   = g_next_pid_num++;
-        if (p3) { ((char*)(ulong)p3)[0]=(char)(t&0xFF); ((char*)(ulong)p3)[1]=(char)((t>>8)&0xFF); ((char*)(ulong)p3)[2]=(char)((t>>16)&0xFF); ((char*)(ulong)p3)[3]=(char)((t>>24)&0xFF); }
-        if (c3) { ((char*)(ulong)c3)[0]=(char)(t&0xFF); ((char*)(ulong)c3)[1]=(char)((t>>8)&0xFF); ((char*)(ulong)c3)[2]=(char)((t>>16)&0xFF); ((char*)(ulong)c3)[3]=(char)((t>>24)&0xFF); }
-        if ((fl3 & 0x00080000ul)) { ulong tls3 = rd_u64((char*)(ulong)ca, 56); if (tls3) xk_wrmsr(0xC0000100, tls3); }
-        return t;
+        // clone3 (glib >= 2.72 threads): struct clone_args { flags,pidfd,child_tid,
+        // parent_tid,exit_signal,stack,stack_size,tls,... }. Same minimal stub as
+        // clone(): mint a child TID so glib's g_thread_new() succeeds. Do NOT write
+        // the caller's child_tid/parent_tid pointers or the FS base (see above).
+        return g_next_pid_num++;
     }
     else if (nr == 44)      { return (ulong)lx_sendto(a); }                 // sendto
     else if (nr == 45)      { return (ulong)lx_recvfrom(a); }             // recvfrom
