@@ -4,9 +4,20 @@ Every functional kernel milestone needs a real QEMU boot/output, not only a
 successful compilation. The baseline sequence is:
 
 ```sh
+./scripts/test.sh
 ./build.sh
 ./scripts/boot_verify.sh
 ```
+
+`scripts/test.sh` is the fast host-side unit suite. It compile-checks every
+freestanding kernel C3 module, builds the existing C3 SHA-256, AES-GCM, P-256,
+and ext4 reader self-test tools, and asserts their known-answer output against
+deterministic fixtures. It does not need the optional musl cross sysroot.
+
+GitHub Actions runs that suite for every pull request and every push to
+`master`; after it passes, CI builds the disk image and runs the headless QEMU
+boot verification. The QEMU job is intentionally a separate gate because a
+compile-only or host-side test result is not boot evidence.
 
 Use `./run.sh serial` while investigating serial output, and use `./run.sh` for
 the graphical desktop. The test scripts in `scripts/` are focused checks for

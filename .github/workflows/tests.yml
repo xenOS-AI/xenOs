@@ -1,0 +1,42 @@
+name: Test xenOS
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: C3 unit tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install --yes nasm binutils e2fsprogs
+      - name: Install the C3 compiler
+        run: |
+          curl --fail --location --silent --show-error https://github.com/c3lang/c3c/releases/download/v0.8.3/c3-linux.tar.gz | sudo tar -xz -C /opt
+          echo /opt/c3/c3c >> "$GITHUB_PATH"
+          /opt/c3/c3c/c3c --version
+      - name: Run C3 unit tests
+        run: ./scripts/test.sh
+
+  boot:
+    name: QEMU boot verification
+    runs-on: ubuntu-24.04
+    needs: unit
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build and QEMU dependencies
+        run: sudo apt-get update && sudo apt-get install --yes nasm binutils e2fsprogs qemu-system-x86 xorriso
+      - name: Install the C3 compiler
+        run: |
+          curl --fail --location --silent --show-error https://github.com/c3lang/c3c/releases/download/v0.8.3/c3-linux.tar.gz | sudo tar -xz -C /opt
+          echo /opt/c3/c3c >> "$GITHUB_PATH"
+      - name: Build boot image
+        run: ./build.sh
+      - name: Verify a headless QEMU boot
+        run: timeout 120s ./scripts/boot_verify.sh

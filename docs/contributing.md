@@ -6,7 +6,9 @@
 2. Keep hand-written kernel C3 separate from cross-built userspace artifacts.
 3. Update this wiki for changed architecture, contracts, build inputs, or
    operational steps; update source-level Doxygen comments for public symbols.
-4. Run the focused check and a QEMU boot verification for kernel behavior.
+4. Run `./scripts/test.sh`, the focused check, and a QEMU boot verification for
+   kernel behavior. Pull requests and pushes to `master` run the same unit and
+   boot checks in GitHub Actions.
 5. Do not commit generated build output, tokens, or machine-local cross sysroots.
 
 ## Writing documentation
