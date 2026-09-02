@@ -5,6 +5,14 @@ graphical desktop in **QEMU**. Everything is hand-written — bootloader, kernel
 drivers, memory helpers, an own X-equivalent display server / window manager,
 and a shell — with **zero borrowed code**.
 
+## Documentation
+
+The [documentation wiki](docs/index.md) covers the architecture, boot path,
+kernel module ownership, build/run workflow, userspace tools, verification,
+and contribution process. Generate the searchable Doxygen source reference
+with `doxygen Doxyfile`; it writes to `build/docs/doxygen/html/` and is not
+committed.
+
 ## What it does (all verified under QEMU)
 
 * Boots from a 512-byte boot sector through a hand-written long-mode trampoline

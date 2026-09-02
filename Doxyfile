@@ -1,0 +1,52 @@
+# xenOS API and source-reference configuration.
+#
+# Run `doxygen Doxyfile` from the repository root.  The generated site is kept
+# out of version control in build/docs/doxygen/.
+
+PROJECT_NAME           = xenOS
+PROJECT_BRIEF          = A from-scratch C3 hobby operating system
+PROJECT_NUMBER         = main
+OUTPUT_DIRECTORY       = build/docs/doxygen
+CREATE_SUBDIRS         = NO
+OUTPUT_LANGUAGE        = English
+MARKDOWN_SUPPORT       = YES
+USE_MDFILE_AS_MAINPAGE = docs/index.md
+FULL_PATH_NAMES        = NO
+STRIP_FROM_PATH        = .
+JAVADOC_AUTOBRIEF      = YES
+QT_AUTOBRIEF           = YES
+MULTILINE_CPP_IS_BRIEF = YES
+EXTRACT_ALL            = YES
+EXTRACT_PRIVATE        = YES
+EXTRACT_STATIC         = YES
+EXTRACT_LOCAL_CLASSES  = YES
+SOURCE_BROWSER         = YES
+INLINE_SOURCES         = NO
+REFERENCED_BY_RELATION = YES
+REFERENCES_RELATION    = YES
+GENERATE_TREEVIEW      = YES
+DISABLE_INDEX          = NO
+SEARCHENGINE           = YES
+GENERATE_HTML          = YES
+HTML_OUTPUT            = html
+GENERATE_LATEX         = NO
+WARN_IF_UNDOCUMENTED   = YES
+WARN_IF_DOC_ERROR      = YES
+WARN_AS_ERROR          = NO
+QUIET                  = NO
+
+# C3 is intentionally mapped to C.  This gives Doxygen a browsable file and
+# source view even though C3 declarations are not a native parser dialect.
+EXTENSION_MAPPING      = c3=C asm=C
+FILE_PATTERNS          = *.c3 *.c *.asm *.py *.sh *.ld *.md
+RECURSIVE              = YES
+INPUT                  = README.md docs boot iso kernel scripts tools user build.sh run.sh
+EXCLUDE                = build sysroot .git \\
+                         kernel/src/xk_dynblob.c3 \\
+                         kernel/src/xk_ublob.c3 \\
+                         kernel/src/xk_uprog.c3
+EXCLUDE_PATTERNS       = */__pycache__/*
+FILTER_PATTERNS        = *.c3="sed -e 's/^module [A-Za-z0-9_]\+;//'"
+
+# Do not follow external links while resolving source input.
+RECURSIVE              = YES
