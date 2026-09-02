@@ -2,6 +2,9 @@
 /build/
 /obj/
 
+# Host-side C3 unit-test artifacts (override with XENOS_TEST_OUT when needed)
+/build/tests/
+
 # compiler object output (c3c emits into build/ccobl, but be safe)
 *.o
 *.elf
