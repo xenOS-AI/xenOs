@@ -64,6 +64,16 @@ if [ -d "$STAGE_SO" ] && ls "$STAGE_SO/libgtk-3.so.0" >/dev/null 2>&1; then
   # (gtk_init + gtk_window_new) runs without them.
   echo "[build] staged shared GTK3 .so tree ($(ls "$STAGE_SO"/lib*.so* | wc -l) entries) into rootfs/usr/lib"
 fi
+# Phase F: include the complete staged Xfce/Xwayland runtime rather than only
+# its libraries.  Xfce also needs dbus/XKB configuration and share data.  This
+# remains optional so a normal kernel build works before the cross desktop has
+# been produced.
+XFCE_ROOTFS="${XFCE_ROOTFS:-/home/timo/crossmusl/rootfs-libs}"
+if [ -d "$XFCE_ROOTFS/usr" ]; then
+  cp -a "$XFCE_ROOTFS/usr/." "$OUT/rootfs/usr/"
+  [ -d "$XFCE_ROOTFS/etc" ] && mkdir -p "$OUT/rootfs/etc" && cp -a "$XFCE_ROOTFS/etc/." "$OUT/rootfs/etc/"
+  echo "[build] staged Xfce/Xwayland runtime from $XFCE_ROOTFS"
+fi
 # Phase E1: dynamic-shared-lib chain for the ext4 rootfs (a non-libc DT_NEEDED .so + dynamic main)
 if command -v musl-gcc >/dev/null 2>&1; then
   musl-gcc -fPIC -shared -o "$OUT/libe1.so" "$ROOT/tools/e1/e1lib.c"

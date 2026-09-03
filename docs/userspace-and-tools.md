@@ -38,6 +38,24 @@ servers. `ref_gcm.c` is a host reference comparison utility.
 | `scripts/mouse_alive_test.sh` / `mouse_move.sh` | Input/liveness checks. |
 | `scripts/crossbuild_deps.sh` | Build static musl userspace dependencies. |
 | `scripts/crossbuild_shared.sh` | Build/stage shared musl dependencies. |
+| `scripts/crossbuild_xwayland.sh` | Cross-build the software Xwayland server and its X11 dependencies. |
+| `scripts/crossbuild_xfce.sh` | Cross-build Xfce 4.18, then optionally stage its runtime. |
+| `scripts/stage_xfce_rootfs.sh` | Stage Xfce binaries, SONAME links, XKB/DBus configuration, and Xfce/GTK data. |
 
 Treat cross-build outputs and staged roots as generated state. Never commit
 credentials passed through build environment variables.
+
+### Xfce staging
+
+The desktop build uses a musl sysroot and does not alter host tool locations.
+After the prerequisite shared GTK and Xwayland builds, run:
+
+```sh
+SYS=/path/to/sysroot SRC=/path/to/sources ROOTFS=/path/to/rootfs-libs \
+  scripts/crossbuild_xfce.sh all
+```
+
+`build.sh` merges `XFCE_ROOTFS` (defaulting to the same `rootfs-libs` path)
+into the generated ext4 rootfs when it exists. The staged tree includes runtime
+configuration and XKB/GTK/Xfce assets in addition to executable files and
+shared objects; copying only `.so` files is not sufficient for a session.
