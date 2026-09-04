@@ -108,8 +108,22 @@ if [ -f /usr/lib/musl/lib/libc.so ]; then
   cp -f /usr/lib/musl/lib/libc.so "$OUT/rootfs/usr/lib/libc.so"
   echo "[build] staged musl libc.so (dynamic loader) on the rootfs"
 fi
+# GDK's Wayland backend makes an XKB context on the display seat; libxkbcommon was
+# cross-built with a DEFAULT config root baked to the (empty) build sysroot path
+# /home/timo/crossmusl/sysroot/share/X11/xkb (deps.sh makes that dir but never fills it).
+# xkb_context_new() returns NULL with no reachable data -> GTK aborts "Failed to create
+# XKB context". Deterministic fix: mirror the REAL xkb data into the GUEST at that exact
+# baked path, so the default config root resolves without relying on env override.
+if [ -d /usr/share/X11/xkb ]; then
+  XKB_GUEST="$OUT/rootfs/home/timo/crossmusl/sysroot/share/X11"
+  mkdir -p "$XKB_GUEST"
+  rm -rf "$XKB_GUEST/xkb"          # /usr/share/X11/xkb is a HOST SYMLINK; cp -rL dereferences it to real data
+  cp -rL /usr/share/X11/xkb "$XKB_GUEST/xkb"
+  echo "[build] staged XKB data into rootfs at the baked default config root ($(du -shL "$XKB_GUEST/xkb" | cut -f1))"
+fi
 rm -f "$OUT/rootfs.ext4"
-mke2fs -q -F -t ext4 -b 1024 -O ^has_journal,^metadata_csum,^64bit,^uninit_bg,^flex_bg,^dir_index,^sparse_super,^resize_inode,^extra_isize,^huge_file,^large_file,^ext_attr,^dir_nlink -d "$OUT/rootfs" "$OUT/rootfs.ext4" 65536
+mke2fs -q -F -t ext4 -b 1024 -O ^has_journal,^metadata_csum,^64bit,^uninit_bg,^flex_bg,^dir_index,^sparse_super,^resize_inode,^extra_isize,^huge_file,^large_file,^ext_attr,^dir_nlink -d "$OUT/rootfs" "$OUT/rootfs.ext4" 98304 \
+  || { echo "[build] mke2fs FAILED: staged rootfs too big for the image (grew past 96MB with the XKB/Xfce data)"; du -shL "$OUT/rootfs"; exit 1; }
 echo "    rootfs.ext4 = $(stat -c%s "$OUT/rootfs.ext4") bytes"
 echo "[build] ai_mock host AI provider server (C3, freestanding)"
 build_host_tool ai_mock

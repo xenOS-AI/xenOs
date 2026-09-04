@@ -17,7 +17,7 @@ uint g_e4_isz;                    // inode size (256)
 uint g_e4_ibtab;                  // group-0 inode-table block
 char[1024] g_e4_blk;              // 1024-byte block cache
 char[256]  g_e4_ino;              // current inode buffer
-char[4096] g_e4_dir;              // directory-scan scratch
+char[16384] g_e4_dir;             // directory-scan scratch (multi-block dirs, e.g. /usr/lib has 150+ entries)
 char[1024] g_e4_leaf;             // depth-1 extent-tree LEAF block cache
 
 fn uint e4_u16(ulong b, ulong o)
@@ -260,10 +260,14 @@ fn void e4_pread(uint ino, char* out, uint file_start, uint max, uint* nout)
 }
 
 // Linear-scan directory inode `ino` for `want`; writes child inode to `out_ino`.
+// Reads the WHOLE directory (all its extent blocks) into g_e4_dir -- a single
+// 4KB read silently misses entries past the first block, so /usr/lib's 150+
+// libs (9KB dir) returned ENOENT for anything past entry ~64 (e.g. libwayland,
+// libz, libxcb, libpangoft2). Keep the buffer 4x the read cap.
 fn bool e4_dir_lookup(uint ino, char* want, uint* out_ino)
 {
     uint ln = 0;
-    e4_data(ino, &g_e4_dir[0], 4096, &ln);
+    e4_data(ino, &g_e4_dir[0], 16384, &ln);
     uint wantlen = 0;
     while (want[wantlen]) wantlen++;
     uint off = 0;

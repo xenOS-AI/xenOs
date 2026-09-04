@@ -21,10 +21,28 @@ const uint WLSURF_ATTACH = 1;     // wl_surface.attach
 const uint WLSURF_COMMIT = 6;     // wl_surface.commit
 const uint WLSEAT_KB = 1;         // wl_seat.get_keyboard (new_id)
 const uint WLSEAT_PTR = 2;        // wl_seat.get_pointer (new_id)
+const uint WLSEAT_CAPS  = 0;      // wl_seat.capabilities event (u32 mask)
+const uint WLCAPS_PTR = 1;
+const uint WLCAPS_KB  = 2;
 const uint WLSURF_FRAME  = 3;     // wl_surface.frame (new_id callback)
+// wl_shell / wl_shell_surface (to give GDK/GTK a toplevel shell so it maps a window):
+const uint WLSHELL_GET_SHELL_SURFACE = 0;  // wl_shell.get_shell_surface (new_id, surface)
+const uint WLSS_SET_TOPLEVEL  = 2;          // wl_shell_surface.set_toplevel
+const uint WLSS_SET_TITLE     = 7;          // wl_shell_surface.set_title
+const uint WLSS_CONFIGURE     = 1;          // wl_shell_surface.configure event (edges, w, h)
+// xdg_wm_base (stable xdg-shell) -- GDK 3.24 has NO wl_shell; it needs THIS to make a toplevel:
+const uint XWM_GET_XDG_SURFACE = 2;         // xdg_wm_base.get_xdg_surface (new_id, surface)
+const uint XSURF_GET_TOPLEVEL  = 1;         // xdg_surface.get_toplevel (new_id)
+const uint XSURF_ACK_CONFIGURE = 4;         // xdg_surface.ack_configure (serial)
+const uint XSURF_SET_GEOM      = 3;         // xdg_surface.set_window_geometry
+const uint XSURF_CONFIGURE     = 0;         // xdg_surface.configure event (serial)
+const uint XTOP_CONFIGURE      = 0;         // xdg_toplevel.configure event (w,h,states[])
+const uint XTOP_SET_TITLE      = 2;         // xdg_toplevel.set_title
 struct WlSur { bool used; uint surf_id; uint buf_base, bw, bh, bstride; bool attached; uint frame_cb; }
 struct WlConn { bool used; uint srvfd; uint clifd; uint robj; uint cbid;
                 uint shm_id, comp_id, surf_id, pool_id, seat_id, kb_id, ptr_id;
+                uint shell_id, shs_id; bool shs_conf;
+                uint wm_id, xsurf_id, xtop_id; bool xdg_configured;
                 uint curw; WlSur[4] surfs; }
 WlConn[4] g_wl;
 uint g_wl_serial = 1;
@@ -82,6 +100,15 @@ fn void wl_emit_cb_done(uint clifd, uint cb)
     wl_emit(clifd, &b[0], 12);
 }
 // wl_keyboard.key event (object kb, op 4): serial, time, key, state
+// wl_seat.capabilities event (op0, arg u32 mask): tells GDK the seat can do
+// pointer+keyboard so it builds a real GdkSeat (else gdk_seat_get_keyboard asserts).
+fn void wl_emit_seat_caps(uint clifd, uint seat)
+{
+    char[12] b;
+    wl_u32(&b[0], 0, seat); wl_u16(&b[0], 4, WLSEAT_CAPS); wl_u16(&b[0], 6, 12);
+    wl_u32(&b[0], 8, (uint)(WLCAPS_PTR | WLCAPS_KB));
+    wl_emit(clifd, &b[0], 12);
+}
 fn void wl_emit_key(uint clifd, uint kb, uint key, uint state)
 {
     char[24] b;
@@ -107,6 +134,44 @@ fn void wl_emit_ptr_button(uint clifd, uint ptr, uint btn)
     wl_u32(&b[0], 8, g_wl_serial++); wl_u32(&b[0], 12, 0); wl_u32(&b[0], 16, btn); wl_u32(&b[0], 20, 1);
     wl_emit(clifd, &b[0], 24);
 }
+// wl_shell_surface.configure event (op1): edges, width, height -- tells GDK the
+// toplevel's size so gtk_init/gtk_window_new can map and start drawing.
+fn void wl_emit_configure(uint clifd, uint shs, uint w, uint h)
+{
+    char[20] b;
+    wl_u32(&b[0], 0, shs); wl_u16(&b[0], 4, WLSS_CONFIGURE); wl_u16(&b[0], 6, 20);
+    wl_u32(&b[0], 8, 0);   // edges = none
+    wl_u32(&b[0], 12, w);
+    wl_u32(&b[0], 16, h);
+    wl_emit(clifd, &b[0], 20);
+}
+// wl_shm.format event (op0, arg u32 format) -- announce an XRGB/ARGB pixel format when
+// the client binds wl_shm, or GDK/cairo refuses to create shm buffers ("no suitable format").
+fn void wl_emit_shm_format(uint clifd, uint shm, uint fmt)
+{
+    char[12] b;
+    wl_u32(&b[0], 0, shm); wl_u16(&b[0], 4, 0); wl_u16(&b[0], 6, 12);
+    wl_u32(&b[0], 8, fmt);
+    wl_emit(clifd, &b[0], 12);
+}
+// xdg_surface.configure (event op0, arg serial) + xdg_toplevel.configure (event op0,
+// w,h,states[]): the configure handshake GDK's xdg toplevel needs before it maps/draws.
+fn void wl_emit_xdg_surface_conf(uint clifd, uint xsurf)
+{
+    char[12] b;
+    wl_u32(&b[0], 0, xsurf); wl_u16(&b[0], 4, XSURF_CONFIGURE); wl_u16(&b[0], 6, 12);
+    wl_u32(&b[0], 8, g_wl_serial++);
+    wl_emit(clifd, &b[0], 12);
+}
+fn void wl_emit_xdg_toplevel_conf(uint clifd, uint xtop, uint w, uint h)
+{
+    char[20] b;
+    wl_u32(&b[0], 0, xtop); wl_u16(&b[0], 4, XTOP_CONFIGURE); wl_u16(&b[0], 6, 20);
+    wl_u32(&b[0], 8, w); wl_u32(&b[0], 12, h); wl_u32(&b[0], 16, 0);   // states array len 0
+    wl_emit(clifd, &b[0], 20);
+}
+// wl_data_device / wl_keyboard.map etc. not needed for a non-input milestone.
+
 fn int wl_find(uint srvfd)
 {
     for (int i = 0; i < 4; i++) { if (g_wl[i].used && g_wl[i].srvfd == srvfd) return i; }
@@ -114,7 +179,7 @@ fn int wl_find(uint srvfd)
 }
 fn void wl_register(uint srvfd, uint clifd)
 {
-    for (int i = 0; i < 4; i++) { if (!g_wl[i].used) { g_wl[i].used = true; g_wl[i].srvfd = srvfd; g_wl[i].clifd = clifd; g_wl[i].robj = 0; g_wl[i].cbid = 0; g_wl[i].shm_id = 0; g_wl[i].comp_id = 0; g_wl[i].seat_id = 0; g_wl[i].kb_id = 0; g_wl[i].ptr_id = 0; g_wl[i].curw = 0; for (int k = 0; k < 4; k++) { g_wl[i].surfs[k].used = false; } return; } }
+    for (int i = 0; i < 4; i++) { if (!g_wl[i].used) { g_wl[i].used = true; g_wl[i].srvfd = srvfd; g_wl[i].clifd = clifd; g_wl[i].robj = 0; g_wl[i].cbid = 0; g_wl[i].shm_id = 0; g_wl[i].comp_id = 0; g_wl[i].seat_id = 0; g_wl[i].kb_id = 0; g_wl[i].ptr_id = 0; g_wl[i].shell_id = 0; g_wl[i].shs_id = 0; g_wl[i].shs_conf = false; g_wl[i].wm_id = 0; g_wl[i].xsurf_id = 0; g_wl[i].xtop_id = 0; g_wl[i].xdg_configured = false; g_wl[i].curw = 0; for (int k = 0; k < 4; k++) { g_wl[i].surfs[k].used = false; } return; } }
 }
 
 // Read a Wayland wire string arg at ring offset `o` (u32 len + bytes + NUL pad);
@@ -187,6 +252,8 @@ fn void wl_serve(int wix)
                     wl_emit_global(clifd, c.robj, 1, "wl_compositor", 4);
                     wl_emit_global(clifd, c.robj, 2, "wl_shm", 1);
                     wl_emit_global(clifd, c.robj, 3, "wl_seat", 6);
+                    wl_emit_global(clifd, c.robj, 4, "wl_shell", 1);
+                    wl_emit_global(clifd, c.robj, 5, "xdg_wm_base", 1);
                 }
                 else if (obj == 1u && op == WLD_SYNC && ms >= 12)      // wl_display.sync -> callback.done
                         {
@@ -201,15 +268,50 @@ fn void wl_serve(int wix)
             uint peek = wl_byte(s, 16);
             uint impl = wl_byte(s, 16 + 1);
             uint id = wl_rd32(s, (ulong)(12u + wl_str_len(s, 12) + 4u));   // name,str,version,new_id
-            if (name == 2u && peek == 'w' && impl == 'l') { c.shm_id = id; }
+            if (name == 2u && peek == 'w' && impl == 'l') { c.shm_id = id;
+                wl_emit_shm_format(clifd, c.shm_id, 0u);   // XRGB8888
+                wl_emit_shm_format(clifd, c.shm_id, 1u); } // ARGB8888
                         else if (name == 1u && peek == 'w') { c.comp_id = id; }
-                        else if (name == 3u) { c.seat_id = id; }
+                        else if (name == 3u) { c.seat_id = id; wl_emit_seat_caps(clifd, c.seat_id); }   // wl_seat + capabilities
+                        else if (name == 4u) { c.shell_id = id; }   // wl_shell
+                        else if (name == 5u) { c.wm_id = id; }      // xdg_wm_base
         }
         else if (obj == c.comp_id && op == WLC_SURFACE && ms >= 12)
         {
             uint sid = wl_rd32(s, 8);
             for (int i = 0; i < 4; i++) { if (!c.surfs[i].used) { c.surfs[i].used = true; c.surfs[i].surf_id = sid; c.surfs[i].bw = 0; c.surfs[i].attached = false; c.surfs[i].frame_cb = 0; c.curw = (uint)i; break; } }
         }
+        else if (obj == c.shell_id && op == WLSHELL_GET_SHELL_SURFACE && ms >= 16)
+        {
+            c.shs_id = wl_rd32(s, 8);      // new wl_shell_surface object id
+            c.shs_conf = false;            // re-request configure on the next toplevel/setup
+            xk_puts("[wl-shell] get_shell_surface -> shs="); xk_putdec((int)c.shs_id); xk_puts("\n");
+        }
+        else if (obj == c.shs_id && ms >= 8)   // wl_shell_surface.* requests (toplevel/title/class/...)
+        {
+            if (op == WLSS_SET_TOPLEVEL && !c.shs_conf)
+            {
+                // tell GDK the toplevel's size so it maps + draws; emit once
+                wl_emit_configure(clifd, c.shs_id, 800u, 600u);
+                c.shs_conf = true;
+                xk_puts("[wl-shell] set_toplevel -> configure(800x600)\n");
+            }
+        }
+        else if (obj == c.wm_id && op == XWM_GET_XDG_SURFACE && ms >= 16)
+        {
+            c.xsurf_id = wl_rd32(s, 8);
+            c.xdg_configured = false;
+            xk_puts("[xdg] get_xdg_surface -> xsurf="); xk_putdec((int)c.xsurf_id); xk_puts("\n");
+        }
+        else if (obj == c.xsurf_id && op == XSURF_GET_TOPLEVEL && ms >= 12)
+        {
+            c.xtop_id = wl_rd32(s, 8);
+            xk_puts("[xdg] get_toplevel -> xtop="); xk_putdec((int)c.xtop_id); xk_puts("\n");
+        }
+        else if (obj == c.xtop_id && ms >= 8)       // xdg_toplevel.* (set_title/app_id/etc) -> ack
+                { /* consumed; size comes from our configure */ }
+                else if (obj == c.xsurf_id && ms >= 8)   // xdg_surface.ack_configure / set_window_geometry
+                        { /* consumed */ }
         else if (obj == c.seat_id && op == WLSEAT_KB && ms >= 12)
         {
             c.kb_id = wl_rd32(s, 8);
@@ -265,6 +367,16 @@ fn void wl_serve(int wix)
                             int si = wl_find_surf(c, obj);
                             if (si >= 0)
                             {
+                                // xdg-shell configure handshake: after the client's first commit
+                                // on a toplevel, send xdg_surface.configure + xdg_toplevel.configure
+                                // once so GDK maps the window and starts drawing.
+                                if (c.xsurf_id != 0 && !c.xdg_configured)
+                                {
+                                    wl_emit_xdg_surface_conf(clifd, c.xsurf_id);
+                                    if (c.xtop_id != 0) wl_emit_xdg_toplevel_conf(clifd, c.xtop_id, 800u, 600u);
+                                    c.xdg_configured = true;
+                                    xk_puts("[xdg] commit -> configure(800x600)\n");
+                                }
                                 if (c.surfs[si].attached) wl_present(wix, si);
                                 c.surfs[si].attached = false;
                                 if (c.surfs[si].frame_cb != 0) { wl_emit_cb_done(clifd, c.surfs[si].frame_cb); c.surfs[si].frame_cb = 0; }

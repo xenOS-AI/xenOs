@@ -1658,6 +1658,17 @@ fn ulong xk_linux_dispatch(ulong nr, ulong* a) @export("xk_linux_dispatch")
         ulong s; bool d;
         return (ulong)(lx_fat_find((char*)(ulong)a[0], &s, &d) ? 0 : -ENOENT);
     }
+    else if (nr == 269 || nr == 439)   // faccessat / faccessat2 (dirfd in a[0], path a[1]; AT_FDCWD=-100)
+    {
+        char* pp = (char*)(ulong)a[1];
+        int gp = 0;
+        while ((char)pp[0] == '/' && gp < 16) { pp++; gp++; }
+        if (vf_classify(pp) != VF_UNKNOWN) return 0;
+        if (xk_startswith(pp, "dev/shm/")) return (ulong)(shm_find(pp) >= 0 ? 0 : (long)(-ENOENT));
+        if (g_e4 && e4_resolve(pp) != 0) return 0;   // ext4 rootfs (GDK/libxkbcommon probe the xkb dir here)
+        ulong s; bool d;
+        return (ulong)(lx_fat_find((char*)(ulong)a[1], &s, &d) ? 0 : -ENOENT);
+    }
     else if (nr == 89 || nr == 267) { return (ulong)(-ENOENT); }             // readlink/readlinkat
     else if (nr == 35)     { return 0; }                                     // nanosleep
     else if (nr == 202)    { return 0; }                                     // futex
@@ -1812,7 +1823,7 @@ fn bool linux_map_elf(char* bin, uint len, ulong base, ulong* entry_out, ulong* 
 // interpreter/auxv scanning sees exactly argc..argv..envp..auxv.
 fn bool linux_build_stack(ulong phdr, ulong entry, ulong base, uint phnum, ulong* sp_out)
 {
-    ulong[40] aux;
+    ulong[48] aux;
     int an = 0;
     aux[an++] = 3;   aux[an++] = phdr;           // AT_PHDR
     aux[an++] = 4;   aux[an++] = 56;             // AT_PHENT
@@ -1828,23 +1839,49 @@ fn bool linux_build_stack(ulong phdr, ulong entry, ulong base, uint phnum, ulong
     aux[an++] = 0;   aux[an++] = 0;              // terminator
 
     const char* PROG = "/UHELLO.EXE";
-    int plen = 0;
-    while (PROG[plen] != 0) plen++;
-    ulong extra = (ulong)an * 8 + 32;            // auxv + argc+argv0+argv1+envp0
-    ulong strsz = (ulong)plen + 1 + 16;          // path string + AT_RANDOM bytes
+    // guest environment: GDK's Wayland backend needs these to reach the kernel
+    // Wayland compositor (the display server) at /run/wayland-0. The process had
+    // an EMPTY env before, so GDK never found WAYLAND_DISPLAY -> "cannot open display".
+    const char* ENV_DISPLAY = "WAYLAND_DISPLAY=wayland-0";
+    const char* ENV_BACKEND = "GDK_BACKEND=wayland";
+    const char* ENV_RUNTIME = "XDG_RUNTIME_DIR=/run";
+    const char* ENV_HOME    = "HOME=/root";
+    const char* ENV_ATBRIDGE= "NO_AT_BRIDGE=1";
+    const uint NENV = 5;
+
+    int plen = 0; while (PROG[plen] != 0) plen++;
+    int slen = 0;                                 // combined env string chars (incl each NUL)
+    for (int e = 0; e < (int)NENV; e++)
+    {
+        char* s = (e==0)?ENV_DISPLAY:(e==1)?ENV_BACKEND:(e==2)?ENV_RUNTIME:(e==3)?ENV_HOME:ENV_ATBRIDGE;
+        int l = 0; while (s[l]) l++; slen += l + 1;
+    }
+    ulong auxv_off = 24u + (ulong)(NENV + 1) * 8u; // argc(1)+argv(2)+envp(NENV+1) then auxv
+    ulong extra = auxv_off + (ulong)an * 8;
+    ulong strsz = (ulong)plen + 1 + (ulong)slen + 16;  // PROG + envs + AT_RANDOM bytes
     ulong rsp = (LX_STACK_TOP - (extra + strsz)) & ~((ulong)15);
 
     ulong random_ptr = rsp + extra;              // AT_RANDOM occupies the 16 bytes
     ulong path_str   = random_ptr + 16;          // then the path string at the top
 
-    // find aux slot for '25' (AT_RANDOM) and write the real pointer
     for (int j = 0; j + 1 < an; j += 2) { if (aux[j] == 25) aux[j + 1] = random_ptr; }
 
     st8(rsp, 1);                 // argc
     st8(rsp + 8, path_str);      // argv[0]
     st8(rsp + 16, 0);            // argv[1] = NULL
-    st8(rsp + 24, 0);            // envp[0] = NULL
-    for (int i = 0; i < an; i++) { st8(rsp + 32 + (ulong)i * 8, aux[i]); }   // auxv
+    ulong envptr = rsp + 24;
+    ulong estr = path_str + (ulong)plen + 1;     // env strings live after argv[0]
+    for (int e = 0; e < (int)NENV; e++)
+    {
+        char* s = (e==0)?ENV_DISPLAY:(e==1)?ENV_BACKEND:(e==2)?ENV_RUNTIME:(e==3)?ENV_HOME:ENV_ATBRIDGE;
+        st8(envptr + (ulong)e * 8, estr);
+        int l = 0; while (s[l]) l++;
+        for (int i = 0; i < l; i++) ((char*)estr)[i] = s[i];
+        ((char*)estr)[l] = 0;
+        estr += (ulong)(l + 1);
+    }
+    st8(envptr + (ulong)NENV * 8, 0);            // envp terminator
+    for (int i = 0; i < an; i++) { st8(rsp + auxv_off + (ulong)i * 8, aux[i]); }
     for (int i = 0; i < 16; i++) { ((char*)random_ptr)[i] = (char)((int)random_ptr + i); }
     for (int i = 0; i < plen; i++) { ((char*)path_str)[i] = PROG[i]; }
     ((char*)path_str)[plen] = 0;
