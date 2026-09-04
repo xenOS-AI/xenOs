@@ -1901,6 +1901,18 @@ fn void linux_launch(ulong entry, ulong stack)
     up_register0();          // proc 0 = this first process, enters the scheduler
     if (e4_mount()) xk_puts("[linux] ext4 rootfs mounted\n");   // Phase C (secondary slave)
     wl_compositor_init();                            // Phase D: kernel Wayland compositor
+    if (g_e4)   // DEBUG read: does the guest's e4_data return real rules/evdev bytes?
+    {
+        uint ri = e4_resolve("/home/timo/crossmusl/sysroot/share/X11/xkb/rules/evdev");
+        uint ri2 = e4_resolve("/home/timo/crossmusl/sysroot/share/X11/xkb/rules/base");
+        xk_puts("[xkb-dbg] evdev ino="); xk_putdec((int)ri); xk_puts(" sz="); if (ri) xk_putdec((int)e4_size(ri));
+        if (ri) { char[256] tmp; uint got = 0; e4_data(ri, &tmp[0], 256, &got);
+            xk_puts(" got="); xk_putdec((int)got); xk_puts(" b0=");
+            for (int z = 0; z < 16; z++) { xk_puthex((uint)((char)tmp[z]) & 0xFFu); xk_puts(" "); }
+            xk_puts(" |pread:"); e4_pread(ri, &tmp[0], 0, 256, &got); xk_putdec((int)got); xk_puts(" P0=");
+            for (int z = 0; z < 16; z++) { xk_puthex((uint)((char)tmp[z]) & 0xFFu); xk_puts(" "); } }
+        xk_puts(" base ino="); xk_putdec((int)ri2); xk_puts(" sz="); if (ri2) xk_putdec((int)e4_size(ri2)); xk_puts("\n");
+    }
     kbd_put('a');                                  // inject one real keypress into the kbd queue (as IRQ1 would)
     mouse_x = 120; mouse_y = 80; mouse_buttons = 1;  // a real PS/2 mouse position (live state for wl_pointer)
     xk_mask_hw_irqs(1);      // keep device IRQs off while the ring-3 process runs

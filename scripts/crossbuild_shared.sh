@@ -24,6 +24,7 @@ shared_autotools() {
   local name="$1" dir="$2" lnkfn="$3"
   echo "=== [$name] configure (shared) ==="
   local preconf="cd \"$SRC/$dir\" && rm -f config.cache config.log && export CC=musl-gcc
+export CFLAGS=\"-O2 -mstackrealign\"
 export CPPFLAGS=\"-I$INC -I$SYS/include\"
 export LDFLAGS=\"-L$SYS/lib -Wl,-rpath-link,$SYS/lib\"
 export PKG_CONFIG_LIBDIR=\"$SYS/lib/pkgconfig\"
@@ -46,7 +47,7 @@ shared_meson() {
   ( cd "$SRC/$rel" && rm -rf build
     export PKG_CONFIG_LIBDIR="$SYS/lib/pkgconfig"
     export PKG_CONFIG=/usr/bin/pkg-config
-    export CFLAGS="-I$SYS/include"
+    export CFLAGS="-I$SYS/include -mstackrealign"
     [ -z "$crossfile" ] && crossfile=/home/timo/crossmusl/wl-cross-cpp.txt
     meson setup build --cross-file="$crossfile" --prefix="$SYS" \
       -Ddefault_library=shared $extra \
@@ -97,7 +98,7 @@ fix_epoxy_headers() {
 
 # ---- bottom of the tree (plain C libs, fast) ----
 if [[ "$PKG" == all || "$PKG" == zlib ]]; then
-  ( cd "$SRC/zlib-1.3.1" && export CC=musl-gcc && ./configure --prefix="$SYS" >/tmp/zlib_cfg.log 2>&1 \
+  ( cd "$SRC/zlib-1.3.1" && export CC=musl-gcc && export CFLAGS="-O2 -mstackrealign" && ./configure --prefix="$SYS" >/tmp/zlib_cfg.log 2>&1 \
       || { echo "zlib CFG"; tail -10 /tmp/zlib_cfg.log; exit 1; }
     make -j4 >/tmp/zlib_make.log 2>&1 || { echo "zlib MAKE"; tail -15 /tmp/zlib_make.log; exit 1; }
     make install >/tmp/zlib_inst.log 2>&1 ); echo "zlib OK"; 
@@ -138,6 +139,7 @@ if [[ "$PKG" == all || "$PKG" == freetype-shared ]]; then   # already has a shar
   ( cd "$SRC" && [ -d freetype-2.13.3 ] || { curl -fsSL -o freetype.tar.gz "https://download.savannah.gnu.org/releases/freetype/freetype-2.13.3.tar.gz" && tar xzf freetype.tar.gz; }
     cd freetype-2.13.3 && rm -rf build-musl-shared && mkdir build-musl-shared && cd build-musl-shared
     export CC=musl-gcc
+    export CFLAGS="-O2 -mstackrealign"
     export CPPFLAGS="-I$INC -I$SYS/include"
     export LDFLAGS="-L$SYS/lib"
     export PKG_CONFIG_LIBDIR="$SYS/lib/pkgconfig"
@@ -196,6 +198,7 @@ fi
 if [[ "$PKG" == all || "$PKG" == cairo ]]; then
   ( cd "$SRC/cairo-1.16.0"
     export CC=musl-gcc
+    export CFLAGS="-O2 -mstackrealign"
     export CPPFLAGS="-I$INC -I$SYS/include -Ubool"
     export LDFLAGS="-L$SYS/lib -Wl,-rpath-link,$SYS/lib"
     export PKG_CONFIG_LIBDIR="$SYS/lib/pkgconfig"
@@ -221,7 +224,7 @@ if [[ "$PKG" == all || "$PKG" == gdk-pixbuf ]]; then
   ( cd "$SRC/gdk-pixbuf-2.42.12" && rm -rf build
     export PKG_CONFIG_LIBDIR="$SYS/lib/pkgconfig"
     export PKG_CONFIG=/usr/bin/pkg-config
-    export CFLAGS="-I$SYS/include"
+    export CFLAGS="-I$SYS/include -mstackrealign"
     meson setup build --cross-file=/home/timo/crossmusl/wl-cross-cpp.txt --prefix="$SYS" \
       -Ddefault_library=shared -Dintrospection=disabled -Dtests=false -Dinstalled_tests=false \
       -Dman=false -Ddocs=false -Dpng=disabled -Djpeg=disabled -Dtiff=disabled -Dbuiltin_loaders=none \
@@ -252,10 +255,10 @@ if [[ "$PKG" == all || "$PKG" == gtk ]]; then
   ( cd "$SRC/gtk-3.24.52" && rm -rf build
     export PKG_CONFIG_LIBDIR="$SYS/lib/pkgconfig"
     export PKG_CONFIG=/usr/bin/pkg-config
-    export CFLAGS="-I$SYS/include"
+    export CFLAGS="-I$SYS/include -mstackrealign"
     export LDFLAGS="-L$SYS/lib -Wl,-rpath-link,$SYS/lib"
     meson setup build --cross-file=/home/timo/crossmusl/wl-cross-cpp.txt --prefix="$SYS" \
-      -Dc_args=-I$SYS/include -Dcpp_args=-I$SYS/include \
+      -Dc_args=-I$SYS/include\ -mstackrealign -Dcpp_args=-I$SYS/include\ -mstackrealign \
       -Ddefault_library=shared -Dx11_backend=false -Dwayland_backend=true -Dbroadway_backend=false \
       -Dintrospection=false -Dgtk_doc=false -Dman=false -Ddemos=false -Dexamples=false \
       -Dtests=false -Dinstalled_tests=false -Dtracker3=false -Dcolord=no -Dcloudproviders=false \

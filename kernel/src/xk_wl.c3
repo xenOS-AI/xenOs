@@ -114,8 +114,17 @@ fn void wl_emit_key(uint clifd, uint kb, uint key, uint state)
     char[24] b;
     wl_u32(&b[0], 0, kb); wl_u16(&b[0], 4, 4); wl_u16(&b[0], 6, 24);
     wl_u32(&b[0], 8, g_wl_serial++); wl_u32(&b[0], 12, 0);
-    wl_u32(&b[0], 16, key); wl_u32(&b[0], 20, state);
     wl_emit(clifd, &b[0], 24);
+}
+
+// wl_keyboard.keymap event (object kb, op 4): keymap bytes, serial, time
+fn void wl_emit_keyboard_keymap(uint clifd, uint kb, uint ser, uint ts)
+{
+    // Placeholder keymap event (no actual keymap data) - satisfies GDK seat build
+    char[32] b;
+    wl_u32(&b[0], 0, kb); wl_u16(&b[0], 4, 4); wl_u16(&b[0], 6, 24);
+    wl_u32(&b[0], 8, ser); wl_u32(&b[0], 12, ts);
+    wl_emit(clifd, &b[0], 32);
 }
 
 // wl_pointer.motion event (op0): time, x fixed, y fixed
@@ -126,6 +135,7 @@ fn void wl_emit_ptr_motion(uint clifd, uint ptr, uint x, uint y)
     wl_u32(&b[0], 8, g_wl_serial++); wl_u32(&b[0], 12, x); wl_u32(&b[0], 16, y);
     wl_emit(clifd, &b[0], 20);
 }
+
 // wl_pointer.button event (op2): serial, time, button, state
 fn void wl_emit_ptr_button(uint clifd, uint ptr, uint btn)
 {
@@ -246,6 +256,7 @@ fn void wl_serve(int wix)
         uint op  = wl_rd16(s, 4);
         uint ms = wl_rd16(s, 6);
         if (ms < 8 || s.len < ms) break;
+        xk_puts("[wl] obj="); xk_putdec((int)obj); xk_puts(" op="); xk_putdec((int)op); xk_puts(" sz="); xk_putdec((int)ms); xk_puts(" cid="); xk_putdec((int)c.shm_id); xk_putdec((int)c.comp_id); xk_putdec((int)c.seat_id); xk_putdec((int)c.wm_id); xk_putdec((int)c.xsurf_id); xk_putdec((int)c.xtop_id); xk_puts("\n");
         if (obj == 1u && op == WLD_GET_REGISTRY && ms >= 12)
                 {
                     c.robj = wl_rd32(s, 8);
@@ -321,6 +332,8 @@ fn void wl_serve(int wix)
                 uint kc = wl_asc_keycode(kbd_pop());
                 if (kc != 0) { wl_emit_key(clifd, c.kb_id, kc, 1u); wl_emit_key(clifd, c.kb_id, kc, 0u); }
             }
+            // emit placeholder keymap fd event so GDK's gdk_seat_get_keyboard builds a real seat
+            wl_emit_keyboard_keymap(clifd, c.kb_id, g_wl_serial++, g_wl_serial);
         }
         else if (obj == c.seat_id && op == WLSEAT_PTR && ms >= 12)
         {
