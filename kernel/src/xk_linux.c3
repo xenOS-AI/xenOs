@@ -27,11 +27,11 @@ extern fn void   xk_wrmsr(uint msr, ulong value);
 
 // ---- user address-space layout (identity map: phys == vaddr) ----
 const ulong LX_USER_START = 0x00400000;   // static non-PIE code/data base (4 MiB)
-const ulong LX_HEAP_END   = 0x00A00000;   // user brk cap (10 MiB)
-const ulong LX_STACK_TOP  = 0x0FF00000;   // user stack top (255 MiB; RAM is 0..256 MiB)
+const ulong LX_HEAP_END   = 0x0A00000;   // user brk cap (10 MiB)
+const ulong LX_STACK_TOP  = 0x7FF00000;   // user stack top (2 GiB - 1 MiB; Phase A.1: raised)
 const ulong LX_INTERP_BASE= 0x0A000000;   // ld-musl interpreter load base (160 MiB)
 const ulong LX_MMAP_BASE  = 0x0C000000;   // anonymous mmap arena start (192 MiB)
-const ulong LX_MMAP_END   = 0x0FC00000;   // arena end (252 MiB)
+const ulong LX_MMAP_END   = 0x7FE00000;   // arena end (2 GiB - 2 MiB; Phase A.1: raised)
 
 ulong g_linux_pml4;                       // this process's CR3
 ulong g_user_brk;                         // program break (brk)
@@ -2076,3 +2076,4 @@ fn void linux_boot_exec()
     xk_puts("[linux] load failed; falling back to the native ring-3 demo\r\n");
     umode_enter();
 }
+

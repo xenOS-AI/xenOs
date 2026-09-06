@@ -134,6 +134,8 @@ fn void xk_boot()
     xk_puts(" frames, ");
     xk_putdec((int)g_used_frames);
     xk_puts(" used\r\n");
+    
+    proc_init();  // Phase A.1: initialize per-process management
 
     ai_client_init();            // default AI transport = mock (HTTP overrides below)
 

@@ -9,7 +9,7 @@ module xk;
 
 const ulong FRAME_SZ   = 4096;
 const ulong MEM_START  = 0x00100000;   // 1 MiB: below this is BIOS/boot data
-const ulong MEM_END    = 0x06000000;   // 96 MiB (matches BootInfo mem_mb)
+const ulong MEM_END    = 0x20000000;   // 512 MiB (Phase A.1: raised for Wayland/Xfce)
 
 const uint BM_BYTES    = (uint)((MEM_END - MEM_START) / FRAME_SZ / 8);
 char[BM_BYTES] frame_bitmap;
@@ -39,6 +39,7 @@ fn void frame_init()
     frame_mark_range(SHADOW, SHADOW + (ulong)FB_W_MAX * (ulong)FB_H_MAX * 4); // shadow buffer
     frame_mark_range(STACKS_BASE, STACKS_BASE + (ulong)MAX_TASKS * TASK_STACK_SZ); // threads
     frame_mark_range(HEAP_BASE, HEAP_BASE + HEAP_TOTAL);                 // kernel heap
+    // Phase A.1: Don't mark the entire 2GiB range as used; let it be allocated dynamically
     g_used_frames = 0;
     for (uint i = 0; i < g_total_frames; i++) { if (frame_bit(i)) g_used_frames++; }
 }
