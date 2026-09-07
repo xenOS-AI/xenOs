@@ -109,7 +109,23 @@ fn void xk_fault(uint v, IntFrame* f)
         xk_puthex(xk_read_cr2());
         xk_puts(" err=");
         xk_puthex(f.error_code);
-        xk_puts(" -> user program terminated by the kernel\r\n");
+        // user rsp is the next qword after the IntFrame (the CPU pushed ss,rsp after
+        // rflags on the ring3->0 fault): offset = sizeof(IntFrame) = 20 qwords = 160B.
+        ulong u_rsp = 0;
+        for (int b = 0; b < 8; b++) { u_rsp |= ((ulong)((char*)f)[160 + b]) << (b * 8); }
+        xk_puts(" rsp="); xk_puthex(u_rsp);
+        for (uint k = 0; k < 24; k++)
+        {
+            ulong q = 0;
+            for (int b = 0; b < 8; b++) { q |= ((ulong)((char*)u_rsp)[(int)k * 8 + b]) << (b * 8); }
+            if (q == 0) continue;
+            xk_puts("\r\n   [s"); xk_putdec((int)k); xk_puts("]="); xk_puthex(q);
+            if ((q >= 0x400000ul && q < 0x800000ul) || (q >= 0xA00000ul && q < 0xB00000ul))
+            {
+                xk_puts(" <CODE>");
+            }
+        }
+        xk_puts("\r\n");
         umode_resume();          // never returns
     }
     xk_puts("\r\n*** EXCEPTION vector=");
