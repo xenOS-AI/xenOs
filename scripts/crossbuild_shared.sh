@@ -157,10 +157,12 @@ if [[ "$PKG" == all || "$PKG" == fontconfig ]]; then
 fi
 
 if [[ "$PKG" == all || "$PKG" == wayland ]]; then  # meson; static was built; want shared libwayland-client/server
-  # labwc (wlroots-0.20 compositor) needs wayland-server >= 1.22.90 -> bump to 1.23.1.
+  # wlroots 0.20 (labwc master) needs wayland-server >= 1.24.0 + xkbcommon >= 1.8.0
+  # + libdrm >= 2.4.129. wayland is bumped here; xkbcommon-1.8.0 & libdrm (pc bump)
+  # are handled in crossbuild_labwc.sh.
   ( cd "$SRC"
-    [ -d wayland-1.23.1 ] || { curl -fsSL -o wl.tgz https://gitlab.freedesktop.org/wayland/wayland/-/archive/1.23.1/wayland-1.23.1.tar.gz && tar xzf wl.tgz; }
-    cd wayland-1.23.1
+    [ -d wayland-1.24.0 ] || { curl -fsSL -o wl.tgz https://gitlab.freedesktop.org/wayland/wayland/-/archive/1.24.0/wayland-1.24.0.tar.gz && tar xzf wl.tgz; }
+    cd wayland-1.24.0
     sed -i "s/dependency('wayland-scanner', native: true, version: meson.project_version())/dependency('wayland-scanner', native: true)/" src/meson.build
     rm -rf build
     export PKG_CONFIG=/usr/bin/pkg-config
