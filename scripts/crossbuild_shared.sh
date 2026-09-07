@@ -157,7 +157,10 @@ if [[ "$PKG" == all || "$PKG" == fontconfig ]]; then
 fi
 
 if [[ "$PKG" == all || "$PKG" == wayland ]]; then  # meson; static was built; want shared libwayland-client/server
-  ( cd "$SRC/wayland-1.22.0"
+  # labwc (wlroots-0.20 compositor) needs wayland-server >= 1.22.90 -> bump to 1.23.1.
+  ( cd "$SRC"
+    [ -d wayland-1.23.1 ] || { curl -fsSL -o wl.tgz https://gitlab.freedesktop.org/wayland/wayland/-/archive/1.23.1/wayland-1.23.1.tar.gz && tar xzf wl.tgz; }
+    cd wayland-1.23.1
     sed -i "s/dependency('wayland-scanner', native: true, version: meson.project_version())/dependency('wayland-scanner', native: true)/" src/meson.build
     rm -rf build
     export PKG_CONFIG=/usr/bin/pkg-config
@@ -175,6 +178,24 @@ fi
 
 if [[ "$PKG" == all || "$PKG" == xkbcommon ]]; then # already shared; ensure staged
   stage libxkbcommon
+fi
+
+if [[ "$PKG" == all || "$PKG" == xcb-util-wm ]]; then  # labwc hard dep (EWMH/ICCCM). autotools.
+  ( cd "$SRC"
+    [ -d xcb-util-wm-0.4.2 ] || { curl -fsSL -o xwm.tgz https://xorg.freedesktop.org/archive/individual/xcb/xcb-util-wm-0.4.2.tar.gz && tar xzf xwm.tgz; }
+    cd xcb-util-wm-0.4.2 && rm -f config.cache
+    export CC=musl-gcc
+    export CFLAGS="-O2 -mstackrealign"
+    export CPPFLAGS="-I$INC -I$SYS/include"
+    export LDFLAGS="-L$SYS/lib -Wl,-rpath-link,$SYS/lib"
+    export PKG_CONFIG_LIBDIR="$SYS/lib/pkgconfig"
+    export PKG_CONFIG=/usr/bin/pkg-config
+    ./configure --host=x86_64-linux-musl --prefix="$SYS" --enable-shared --disable-static \
+      >/tmp/xcb-util-wm_cfg.log 2>&1 || { echo "xcb-util-wm CFG"; tail -12 /tmp/xcb-util-wm_cfg.log; exit 1; }
+    make -j4 >/tmp/xcb-util-wm_make.log 2>&1 || { echo "xcb-util-wm MAKE"; tail -15 /tmp/xcb-util-wm_make.log; exit 1; }
+    make install >/tmp/xcb-util-wm_inst.log 2>&1 || { echo "xcb-util-wm INST"; tail -10 /tmp/xcb-util-wm_inst.log; exit 1; }
+  ) && echo "xcb-util-wm OK"
+  stage libxcb-ewmh libxcb-icccm
 fi
 
 # ---- glib (the GTK foundation) ----

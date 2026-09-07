@@ -78,12 +78,17 @@ EOF
 fi
 
 if [[ "${1:-all}" == protocols || "${1:-all}" == all ]]; then
-  ver=1.32
+  # labwc requires wayland-protocols >= 1.39 (staged 1.34 was too old for labwc).
+  ver=1.40
   cd "$SRC"
   [ -d wayland-protocols-$ver ] || { curl -sSL -o wp.tgz https://gitlab.freedesktop.org/wayland/wayland-protocols/-/archive/$ver/wayland-protocols-$ver.tar.gz && tar xzf wp.tgz; }
   rm -rf wayland-protocols-$ver/build && cd wayland-protocols-$ver
   meson setup build --cross-file="$SRC/wl-cross.txt" --prefix="$SYS" -Dtests=false >/dev/null
   ninja -C build install
+  # meson installs its .pc into datadir/pkgconfig (wayland-protocols sets pkgconfigdir to
+  # ${datadir}/pkgconfig), but the CROSS pkg-config bootstrap reads lib/pkgconfig -- mirror
+  # it there or pkg-config still resolves the older version.
+  install -Dm644 "$SYS/share/pkgconfig/wayland-protocols.pc" "$SYS/lib/pkgconfig/wayland-protocols.pc"
 fi
 
 if [[ "${1:-all}" == pixman || "${1:-all}" == all ]]; then
