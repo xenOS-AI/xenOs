@@ -87,6 +87,7 @@ const uint ELF_E_PHOFF  = 32;
 const uint ELF_E_PHENTSZ= 54;
 const uint ELF_E_PHNUM  = 56;
 const uint PT_LOAD      = 1;
+const uint PT_INTERP    = 3;
 const uint PH_OFF_FLAGS = 4;
 const uint PH_OFF_VADDR = 16;
 const uint PH_OFF_FILESZ= 32;
@@ -1816,6 +1817,60 @@ fn bool linux_map_elf(char* bin, uint len, ulong base, ulong* entry_out, ulong* 
     return true;
 }
 
+// Map a rootfs ELF DIRECTLY from ext4 (per-PT_LOAD e4_pread into each mapped vaddr),
+// so a large static main (labwc ~56MB) never has to fit the 2MiB kernel heap the way
+// linux_map_elf's whole-file mbuf buffer does. Only buffers the ELF header + phdr table.
+fn bool linux_map_elf_from_e4(uint ino, ulong base, ulong* entry_out, ulong* phdr_out,
+                              uint* phnum_out, bool* interp_out)
+{
+    char[1024] hdr;         // ELF header + phdr table (labwc-static needs 568B)
+    uint hgot = 0;
+    e4_pread(ino, &hdr[0], 0, 1024, &hgot);
+    if (hgot < 64) { xk_puts("[linux] e4 main header short\r\n"); return false; }
+    if ((char)hdr[0] != (char)0x7F || hdr[1] != 'E' || hdr[2] != 'L' || hdr[3] != 'F')
+    { xk_puts("[linux] e4 main bad magic\r\n"); return false; }
+    if ((char)hdr[4] != (char)2 || hdr[5] != (char)1)
+    { xk_puts("[linux] e4 main not ELF64 LE\r\n"); return false; }
+    uint etype = rd_u16(&hdr[0], ELF_E_TYPE);
+    if (etype != 2 && etype != 3) { xk_puts("[linux] e4 main not executable\r\n"); return false; }
+    ulong entry_off = rd_u64(&hdr[0], ELF_E_ENTRY);
+    ulong phoff = rd_u64(&hdr[0], ELF_E_PHOFF);
+    uint phent = rd_u16(&hdr[0], ELF_E_PHENTSZ);
+    uint phnum = rd_u16(&hdr[0], ELF_E_PHNUM);
+    if (phent != PH_SIZE)
+    { xk_puts("[linux] e4 main bad phdr size\r\n"); return false; }
+    ulong need = phoff + (ulong)phnum * (ulong)PH_SIZE;
+    if (need > 1024) { xk_puts("[linux] e4 main phdr table > 1K\r\n"); return false; }
+    bool interp = false;
+    ulong elf_base = base;
+    for (uint i = 0; i < phnum; i++)
+    {
+        uint ph = (uint)(phoff + (ulong)i * (ulong)PH_SIZE);
+        uint ptype = rd_u32(&hdr[0], ph);
+        if (ptype == PT_INTERP) interp = true;
+        if (ptype != PT_LOAD) continue;
+        ulong poff  = rd_u64(&hdr[0], ph + 8);
+        ulong vaddr = rd_u64(&hdr[0], ph + PH_OFF_VADDR);
+        ulong filesz= rd_u64(&hdr[0], ph + PH_OFF_FILESZ);
+        ulong memsz = rd_u64(&hdr[0], ph + PH_OFF_MEMSZ);
+        ulong va = base + vaddr;
+        if (poff == 0) { elf_base = va; }
+        mark_seg_users(va, memsz);
+        xk_puts("[linux]  load "); xk_puthex(va); xk_puts(" +"); xk_putdec((int)memsz); xk_puts("\r\n");
+        if (filesz > 0)
+        {
+            uint got = 0;
+            e4_pread(ino, (char*)va, (uint)poff, (uint)filesz, &got);
+        }
+        if (memsz > filesz) { kmemzero((void*)(ulong)(va + filesz), memsz - filesz); }
+    }
+    *entry_out = base + entry_off;
+    *phdr_out = elf_base + phoff;
+    *phnum_out = phnum;
+    *interp_out = interp;
+    return true;
+}
+
 // Build the Linux SysV initial stack (argc/argv/envp/auxv) for a process whose
 // binary program-header table is at `phdr`, entry at `entry`, load base at
 // `base` (0 = static, else the interpreter's base -> AT_BASE). The block is
@@ -1975,42 +2030,23 @@ fn bool linux_dyn_rootfs()
     uint m_ino = e4_resolve("/usr/bin/labwc");
     if (m_ino == 0) return false;
     uint msize = e4_size(m_ino);
-    if (msize == 0 || msize > 0x4000000u) return false;   // allow up to 64 MiB rootfs mains
-    char* mbuf = (char*)kmalloc((ulong)msize + 16);
-    if (mbuf == null) return false;
-    uint mread = 0;
-    e4_data(m_ino, mbuf, msize, &mread);
-    // map at base 0 (ET_EXEC: absolute vaddrs, no load-bias math). PIE/ET_DYN would
-    // map at LX_USER_START, but we build the rootfs main -no-pie to use the clean path.
-    ulong m_entry = 0; ulong m_phdr = 0; uint m_phnum = 0;
-    if (!linux_map_elf(mbuf, mread, 0, &m_entry, &m_phdr, &m_phnum)) { kfree(mbuf); return false; }
-    // TEMPORARY: a STATIC rootfs main (no PT_INTERP) is launched directly by the
-    // working static path (dynmain is musl -static for now; the real dynamic-.so
-    // loader is TODO). PT_INTERP == 3.
-    bool had_interp = false;
-    {
-        ulong phoff = rd_u64(mbuf, 32);
-        ulong phent = rd_u16(mbuf, 54);
-        ulong pn = rd_u16(mbuf, 56);
-        for (ulong i = 0; i < pn; i++)
-        {
-            if (rd_u32(mbuf, (uint)(phoff + i * phent)) == 3) { had_interp = true; }
-        }
-    }
+    if (msize == 0 || msize > 0x08000000u) return false;   // allow up to 128 MiB rootfs mains
+    // Map DIRECTLY from ext4 per PT_LOAD (no whole-file kmalloc -> large static mains like
+    // the 56MB labwc work despite the 2MiB kernel heap). ET_EXEC: map at absolute vaddrs
+    // (base 0, no load-bias). Also reports whether PT_INTERP is present.
+    ulong m_entry = 0; ulong m_phdr = 0; uint m_phnum = 0; bool had_interp = false;
+    if (!linux_map_elf_from_e4(m_ino, 0, &m_entry, &m_phdr, &m_phnum, &had_interp)) return false;
     if (!had_interp)
     {
         ulong stk = 0;
         if (linux_build_stack(m_phdr, m_entry, 0, m_phnum, &stk))
         {
-            kfree(mbuf);
             xk_puts("[linux] E1 rootfs STATIC main: entry@"); xk_puthex(m_entry); xk_puts("\r\n");
             linux_launch(m_entry, stk);
             return true;
         }
-        kfree(mbuf);
         return false;
     }
-    kfree(mbuf);
     uint i_ino = e4_resolve("/usr/lib/libc.so");           // musl libc == the dynamic linker
     if (i_ino == 0) { xk_puts("[linux] E1: no interpreter on rootfs\r\n"); return false; }
     uint isize = e4_size(i_ino);
