@@ -122,7 +122,7 @@ if [ -d /usr/share/X11/xkb ]; then
   echo "[build] staged XKB data into rootfs at the baked default config root ($(du -shL "$XKB_GUEST/xkb" | cut -f1))"
 fi
 rm -f "$OUT/rootfs.ext4"
-mke2fs -q -F -t ext4 -b 1024 -O ^has_journal,^metadata_csum,^64bit,^uninit_bg,^flex_bg,^dir_index,^sparse_super,^resize_inode,^extra_isize,^huge_file,^large_file,^ext_attr,^dir_nlink -d "$OUT/rootfs" "$OUT/rootfs.ext4" 131072 \
+mke2fs -q -F -t ext4 -b 1024 -O ^has_journal,^metadata_csum,^64bit,^uninit_bg,^flex_bg,^dir_index,^sparse_super,^resize_inode,^extra_isize,^huge_file,^large_file,^ext_attr,^dir_nlink -d "$OUT/rootfs" "$OUT/rootfs.ext4" 196608 \
   || { echo "[build] mke2fs FAILED: staged rootfs too big for the image (grew past 96MB with the XKB/Xfce data)"; du -shL "$OUT/rootfs"; exit 1; }
 echo "    rootfs.ext4 = $(stat -c%s "$OUT/rootfs.ext4") bytes"
 echo "[build] ai_mock host AI provider server (C3, freestanding)"
