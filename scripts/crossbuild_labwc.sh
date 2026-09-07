@@ -114,10 +114,12 @@ if [[ "${1:-all}" == all || "$1" == labwc ]]; then
     [ -d labwc-master ] || { curl -fsSL -o labwc-master.tgz https://github.com/labwc/labwc/archive/refs/heads/master.tar.gz && tar xzf labwc-master.tgz; }
     cd labwc-master && rm -rf build
     crossenv
+    # MUST be non-PIE (ET_EXEC): the kernel's rootfs loader maps the main at base 0
+    # expecting ET_EXEC (meson builds PIE by default -> ET_DYN -> maps at vaddr 0 and hangs)
     meson setup build --cross-file=/home/timo/crossmusl/wl-cross.txt --prefix="$SYS" \
       -Dxwayland=disabled -Dicon=disabled -Dsvg=disabled -Dnls=disabled \
       -Dman-pages=disabled -Dtest=disabled -Dstatic_analyzer=disabled \
-      -Dc_args="-I$INC -I$SYS/include -mstackrealign" \
+      -Db_pie=false -Dc_args="-I$INC -I$SYS/include -mstackrealign" \
       >/tmp/labwc_cfg.log 2>&1
     ninja -C build && ninja -C build install )
   echo "labwc OK:"
