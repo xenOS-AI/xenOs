@@ -44,6 +44,7 @@ ulong g_mmap_cur = LX_MMAP_BASE;          // next anonymous mmap address
 ulong g_map_end  = LX_MMAP_BASE;          // high-water mark of all mapped guest user regions
 bool[256] g_shared_slot;                   // user-arena 2 MiB slots marked MAP_SHARED
 ulong g_linux_pid = 1;
+ulong g_sys_trace = 0;                      // first-N-syscall audit (labwc bring-up)
 ulong g_tid_addr = 0;
 // ---- fork() state (Phase A.2: synchronous child-first fork) ----
 // The kernel services ONE ring-3 process at a time. fork() clones the current
@@ -1570,6 +1571,13 @@ fn ulong xk_linux_dispatch(ulong nr, ulong* a) @export("xk_linux_dispatch")
     // record the in-flight syscall (re-dispatch of a parked process reads these)
     g_disp_nr = nr;
     g_disp_a = a;
+    if (g_sys_trace < 400)
+    {
+        xk_puts("[sys] nr="); xk_putdec((int)nr);
+        xk_puts(" a0="); xk_puthex(a[0]); xk_puts(" a1="); xk_puthex(a[1]);
+        xk_puts("\r\n");
+        g_sys_trace++;
+    }
     if (nr == 60 || nr == 231)                       // exit / exit_group
     {
         xk_puts("\r\n[linux] process exited (code=");
@@ -1907,7 +1915,7 @@ fn bool linux_build_stack(ulong phdr, ulong entry, ulong base, uint phnum, ulong
     const char* ENV_RUNTIME = "XDG_RUNTIME_DIR=/run";
     const char* ENV_HOME    = "HOME=/root";
     const char* ENV_ATBRIDGE= "NO_AT_BRIDGE=1";
-    const char* ENV_WLRBACK = "WLR_BACKENDS=headless";
+    const char* ENV_WLRBACK = "WLR_BACKENDS=wayland";
     const char* ENV_WLRREND = "WLR_RENDERER=pixman";
     const uint NENV = 7;
 
