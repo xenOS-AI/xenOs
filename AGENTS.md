@@ -379,6 +379,7 @@ qemu-system-x86_64 -drive file=build/xenos.img,format=raw -m 256  # Disk boot
 8. **Cross‑build dependencies** — `scripts/crossbuild_deps.sh` builds the static musl sysroot; `scripts/crossbuild_shared.sh` rebuilds as shared `.so` for the dynamic loader. Both require `musl-gcc`, `meson`, `ninja`, `autotools`, `pkg-config`.
 9. **Test incrementally** — run the smallest relevant self‑test (`scripts/test.sh` for crypto/ext4, `scripts/ai_selftest.sh` for networking, `scripts/boot_verify.sh` for full boot) before declaring a change complete.
 10. **Commit milestones** — every milestone is boot‑verified and committed. Do not claim completion without real boot/output evidence.
+11. **Always create a PR** — after committing a completed milestone, open a pull request using the `gh` CLI: `gh pr create --base master --title "<short title>" --body "<summary of changes, tests run, boot evidence>"`. If a PR cannot be created (gh not installed/unauthenticated, no upstream remote, or push rejected), tell the user explicitly that they need to create it and give them the exact `gh pr create` command to run. Do not silently finish without a PR or a user-facing PR instruction.
 
 ### What to Avoid
 
