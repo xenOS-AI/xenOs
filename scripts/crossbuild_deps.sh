@@ -4,10 +4,8 @@
 # libtool, pkg-config. musl ships no kernel headers -> linuxinc/ stubs are required.
 #   usage: scripts/crossbuild_deps.sh [libffi] [wayland]
 set -euo pipefail
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SYS="${SYS:-/home/timo/crossmusl/sysroot}"
-SRC=/home/timo/crossmusl/src
-INC=/home/timo/crossmusl/linuxinc
+. "$(cd "$(dirname "$0")/.." && pwd)/scripts/xenos_env.sh"
+XENOS_TC="$(dirname "$SYS")"
 mkdir -p "$SRC" "$SYS" "$INC/linux"
 
 # musl lacks <linux/*> kernel headers -> stub the two libs want
@@ -31,13 +29,13 @@ typedef unsigned long __kernel_size_t; typedef long __kernel_ssize_t;
 EOF
 
 # cross pkg-config: target deps resolve ONLY from the sysroot
-cat > /home/timo/crossmusl/pkg-config-cross.sh <<'EOF'
+cat > "$XENOS_TC/pkg-config-cross.sh" <<EOF
 #!/bin/sh
-export PKG_CONFIG_LIBDIR="/home/timo/crossmusl/sysroot/lib/pkgconfig"
+export PKG_CONFIG_LIBDIR="$SYS/lib/pkgconfig"
 unset PKG_CONFIG_PATH
 exec /usr/bin/pkg-config "$@"
 EOF
-chmod +x /home/timo/crossmusl/pkg-config-cross.sh
+chmod +x "$XENOS_TC/pkg-config-cross.sh"
 
 if [[ "${1:-all}" == libffi || "${1:-all}" == all ]]; then
   ver=3.4.6
@@ -58,7 +56,7 @@ if [[ "${1:-all}" == wayland || "${1:-all}" == all ]]; then
 c = '/usr/bin/musl-gcc'
 ar = '/usr/bin/ar'
 strip = '/usr/bin/strip'
-pkg-config = '/home/timo/crossmusl/pkg-config-cross.sh'
+pkg-config = '$XENOS_TC/pkg-config-cross.sh'
 [built-in options]
 c_args = ['-I$INC']
 [host_machine]
@@ -137,17 +135,17 @@ if [[ "${1:-all}" == freetype-shared || "${1:-all}" == all ]]; then
     --enable-shared --disable-static --without-zlib --without-bzip2 --without-png \
     --without-harfbuzz --without-brotli >/dev/null
   make -j2
-  mkdir -p "${ROOTFS:-/home/timo/crossmusl/rootfs-libs}/usr/lib"
-  cp -L .libs/libfreetype.so* "${ROOTFS:-/home/timo/crossmusl/rootfs-libs}/usr/lib/" 2>/dev/null
-  rm -f "${ROOTFS:-/home/timo/crossmusl/rootfs-libs}/usr/lib/libfreetype.so"
+  mkdir -p "$ROOTFS/usr/lib"
+  cp -L .libs/libfreetype.so* "$ROOTFS/usr/lib/" 2>/dev/null
+  rm -f "$ROOTFS/usr/lib/libfreetype.so"
   echo "  -> libfreetype.so.6 staged for the rootfs (shared musl, SONAME-versioned)"
 fi
 
 if [[ "${1:-all}" == zlib || "${1:-all}" == all ]]; then   # Phase E2: zlib (cairo/pango/fontconfig dep)
   cd "$SRC"; [ -d zlib-1.3.1 ] || { curl -fsSL -o z.tgz "https://github.com/madler/zlib/archive/refs/tags/v1.3.1.tar.gz" && tar xzf z.tgz; }
   cd zlib-1.3.1 && CC=musl-gcc AR=ar RANLIB=ranlib ./configure --static --prefix="$SYS" >/dev/null && make -j2 && make install
-  cat > "$SYS/lib/pkgconfig/zlib.pc" <<'PC'
-prefix=/home/timo/crossmusl/sysroot; exec_prefix=${prefix}; libdir=${exec_prefix}/lib; includedir=${prefix}/include
+  cat > "$SYS/lib/pkgconfig/zlib.pc" <<PC
+prefix=$SYS; exec_prefix=${prefix}; libdir=${exec_prefix}/lib; includedir=${prefix}/include
 Name: zlib; Description: zlib static musl; Version: 1.3.1; Libs: -L${libdir} -lz; Cflags: -I${includedir}
 PC
 fi

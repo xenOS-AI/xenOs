@@ -10,10 +10,10 @@
 # Xwayland needs: the X11 protocol foundation + XCB + Xlib + extension libs, the
 # server-side deps (fonts/shm-fences/modegen/XKB/libmd/libdrm), then the Xwayland
 # server (no glamor/glx => pure wl_shm software rendering, no Mesa for F.1).
-SYS="${SYS:-/home/timo/crossmusl/sysroot}"
-SRC="/home/timo/crossmusl/src"
-ROOTFS="${ROOTFS:-/home/timo/crossmusl/rootfs-libs}"
-INC="/home/timo/crossmusl/linuxinc"
+SYS="${SYS:-$XENOS_TC/sysroot}"
+SRC="$XENOS_TC/src"
+ROOTFS="${ROOTFS:-$XENOS_TC/rootfs-libs}"
+INC="$XENOS_TC/linuxinc"
 mkdir -p "$ROOTFS/usr/lib" "$ROOTFS/usr/bin"
 
 PKG="${1:-all}"
@@ -47,7 +47,7 @@ xwayland_meson() {  # <name> <dir> <crossfile> <extra -D args...>
     unset PKG_CONFIG_LIBDIR PKG_CONFIG_PATH
     export CC=musl-gcc CFLAGS="-O2 -mstackrealign -I$SYS/include"
     rm -rf build
-    meson setup build --cross-file="$cf" --native-file=/home/timo/crossmusl/native.txt \
+    meson setup build --cross-file="$cf" --native-file=$XENOS_TC/native.txt \
       --prefix="$SYS" -Ddefault_library=shared "$@" \
       >/tmp/${name}_cfg.log 2>&1 || { echo "CFG_FAIL $name"; tail -25 /tmp/${name}_cfg.log; return 1; }
     ninja -C build >/tmp/${name}_make.log 2>&1 || { echo "MAKE_FAIL $name"; tail -30 /tmp/${name}_make.log; return 1; }
@@ -81,7 +81,7 @@ if [[ "$PKG" == all || "$PKG" == setup ]]; then
 #endif
 EOF
   # native (build-machine) pkg-config so host tools like wayland-scanner resolve
-  cat > /home/timo/crossmusl/native.txt <<'EOF'
+  cat > $XENOS_TC/native.txt <<'EOF'
 [binaries]
 pkg-config = '/usr/bin/pkg-config'
 c = '/usr/bin/gcc'
@@ -130,7 +130,7 @@ if [[ "$PKG" == all || "$PKG" == xwdeps ]]; then
   x11_autotools libXfont2 libXfont2-2.0.6 || exit 1
   ( cd "$SRC/libxcvt-0.1.3" && rm -rf build
     export PKG_CONFIG_LIBDIR="$SYS/lib/pkgconfig" PKG_CONFIG=/usr/bin/pkg-config
-    meson setup build . --cross-file=/home/timo/crossmusl/wl-cross.txt --prefix="$SYS" \
+    meson setup build . --cross-file=$XENOS_TC/wl-cross.txt --prefix="$SYS" \
       >/tmp/libxcvt_cfg.log 2>&1 || { echo "CFG libxcvt"; tail -15 /tmp/libxcvt_cfg.log; exit 1; }
     ninja -C build >/tmp/libxcvt_make.log 2>&1 || { echo "MAKE libxcvt"; tail -20 /tmp/libxcvt_make.log; exit 1; }
     ninja -C build install >/tmp/libxcvt_inst.log 2>&1 ) || exit 1
@@ -142,7 +142,7 @@ if [[ "$PKG" == all || "$PKG" == xwayland-deps ]]; then
   # libxkbfile (meson) + xkbcomp (autotools) — server XKB
   ( cd "$SRC/libxkbfile-1.2.0" && rm -rf build
     unset PKG_CONFIG_LIBDIR; export PKG_CONFIG=/usr/bin/pkg-config
-    meson setup build . --cross-file=/home/timo/crossmusl/wl-cross.txt --prefix="$SYS" \
+    meson setup build . --cross-file=$XENOS_TC/wl-cross.txt --prefix="$SYS" \
       >/tmp/xkbfile_cfg.log 2>&1 && ninja -C build >/tmp/xkbfile_make.log 2>&1 \
       && ninja -C build install >/tmp/xkbfile_inst.log 2>&1 ) \
     || { echo "libxkbfile FAIL"; tail -12 /tmp/xkbfile_cfg.log; exit 1; }
@@ -162,7 +162,7 @@ if [[ "$PKG" == all || "$PKG" == xwayland-deps ]]; then
   # libdrm — required by Xwayland even without glamor (drm_fourcc/xf86drm)
   ( cd "$SRC/libdrm-2.4.121" && rm -rf build-musl
     unset PKG_CONFIG_LIBDIR; export PKG_CONFIG=/usr/bin/pkg-config
-    meson setup build-musl . --cross-file=/home/timo/crossmusl/wl-cross.txt --prefix="$SYS" \
+    meson setup build-musl . --cross-file=$XENOS_TC/wl-cross.txt --prefix="$SYS" \
       -Ddefault_library=shared -Dtests=false -Dman-pages=disabled -Dvalgrind=disabled \
       -Dcairo-tests=disabled -Dintel=disabled -Damdgpu=disabled -Dradeon=disabled \
       -Dnouveau=disabled -Dvmwgfx=disabled -Dfreedreno=disabled -Detnaviv=disabled \
@@ -175,7 +175,7 @@ if [[ "$PKG" == all || "$PKG" == xwayland-deps ]]; then
   if [ -d "$SRC/wayland-protocols-1.34" ]; then
     ( cd "$SRC/wayland-protocols-1.34" && rm -rf build
       unset PKG_CONFIG_LIBDIR; export PKG_CONFIG=/usr/bin/pkg-config
-      meson setup build . --cross-file=/home/timo/crossmusl/wl-cross.txt --prefix="$SYS" -Dtests=false \
+      meson setup build . --cross-file=$XENOS_TC/wl-cross.txt --prefix="$SYS" -Dtests=false \
         >/tmp/wp_cfg.log 2>&1 && ninja -C build >/tmp/wp_make.log 2>&1 \
         && ninja -C build install >/tmp/wp_inst.log 2>&1 ) \
       || { echo "wayland-protocols FAIL"; tail -12 /tmp/wp_cfg.log; exit 1; }
@@ -191,8 +191,8 @@ if [[ "$PKG" == all || "$PKG" == xwayland ]]; then
     unset PKG_CONFIG_LIBDIR PKG_CONFIG_PATH
     export CC="musl-gcc" CFLAGS="-O2 -mstackrealign -I$SYS/include"
     rm -rf build
-    meson setup build --cross-file=/home/timo/crossmusl/wl-cross-cpp.txt \
-      --native-file=/home/timo/crossmusl/native.txt --prefix="$SYS" \
+    meson setup build --cross-file=$XENOS_TC/wl-cross-cpp.txt \
+      --native-file=$XENOS_TC/native.txt --prefix="$SYS" \
       -Dglamor=false -Dglx=false -Dxvfb=false -Dxwayland_ei=false \
       -Dsecure-rpc=false -Dxdmcp=false -Dxdm-auth-1=false -Dlisten_tcp=false \
       -Dsha1=libmd \

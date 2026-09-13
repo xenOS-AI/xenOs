@@ -6,12 +6,14 @@
 # the entire desktop:
 #   scripts/crossbuild_xfce.sh [all|base|deps|apps|stage]
 set -euo pipefail
+. "$(cd "$(dirname "$0")/.." && pwd)/scripts/xenos_env.sh"
+XENOS_TC="$(dirname "$SYS")"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SYS="${SYS:-/home/timo/crossmusl/sysroot}"
-SRC="${SRC:-/home/timo/crossmusl/src}"
-ROOTFS="${ROOTFS:-/home/timo/crossmusl/rootfs-libs}"
-INC="${INC:-/home/timo/crossmusl/linuxinc}"
+SYS="${SYS:-$XENOS_TC/sysroot}"
+SRC="${SRC:-$XENOS_TC/src}"
+ROOTFS="${ROOTFS:-$XENOS_TC/rootfs-libs}"
+INC="${INC:-$XENOS_TC/linuxinc}"
 JOBS="${JOBS:-4}"
 PKG="${1:-all}"
 readonly XFE=(--host=x86_64-linux-musl "--prefix=$SYS" --enable-shared --disable-static)

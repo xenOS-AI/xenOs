@@ -20,3 +20,9 @@ kernel.bin
 # scratch / editor
 *s.swp
 *~tools/szprobe
+
+# project-local, user-agnostic toolchain (created by scripts/bootstrap.sh)
+/.toolchain/
+
+# generated at build time by build.sh (guest XKB config root)
+/kernel/src/xk_xkbpath.c3

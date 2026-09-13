@@ -139,22 +139,38 @@
 
 ### Build Commands
 
+The build is **self-bootstrapping and user-agnostic**: all toolchain paths come
+from `scripts/xenos_env.sh` (a project-local `.toolchain/` by default), and
+missing host tools are auto-installed by `scripts/bootstrap.sh`. There are no
+user-specific (`/home/timo`) paths anywhere in executable code.
+
 ```sh
-./build.sh                  # Full build: boot stages, kernel, rootfs, image, ISO
-./run.sh                    # Boot graphical desktop (QEMU, VGA)
-./run.sh serial             # Headless boot (serial console in terminal)
-./run.sh serial             # Headless boot with serial console in terminal
+./scripts/bootstrap.sh            # one-time: install missing host tools + c3c
+./scripts/bootstrap.sh doctor     # report what's present/missing (no changes)
+./scripts/bootstrap.sh sysroot    # ALSO cross-build the musl userspace sysroot
+./build.sh                        # Full build: boot stages, kernel, rootfs, image, ISO
+./run.sh                          # Boot graphical desktop (QEMU, VGA)
+./run.sh serial                   # Headless boot (serial console in terminal)
 qemu-system-x86_64 -cdrom build/xenos.iso -m 256 -boot d   # ISO boot
 qemu-system-x86_64 -drive file=build/xenos.img,format=raw -m 256  # Disk boot
 ```
 
-### Toolchain
+### Toolchain & configuration
 
-- **c3c** 0.8.x (Arch: `sudo pacman -S c3c`) — C3 compiler, LLVM‑based.
+Paths default to a project-local `.toolchain/` and are overridable via `XENOS_*`
+env vars (see `docs/build-and-run.md`). Key aliases exported by `xenos_env.sh`:
+`SYS`→`XENOS_CROSSROOT` (sysroot), `SRC`/`INC`/`ROOTFS`/`HOSTPKG`→project-local,
+`CROSSROOT`→`XENOS_CROSSROOT`. On a machine without the cross-musl sysroot,
+`build.sh` writes EMPTY but valid blob modules so the kernel still compiles+boots
+(desktop + core userspace only); `./scripts/bootstrap.sh sysroot` re-enables the
+Linux/GTK/labwc artifacts.
+
+- **c3c** 0.8.x — fetched by bootstrap into `.toolchain/bin` (no root needed).
 - **nasm** — assembler for boot stages, host runtime, asm runtime.
 - **ld/objcopy** — GNU ld for linking (elf_x86_64), objcopy for binary extraction.
-- **python3** — only for `mkfont.py` (font generation) and host test scripts; NOT used by the main build.
-- **qemu-system-x86_64** — TCG (no KVM on this host; guest runs under TCG, slow).
+- **python3** — only for `mkfont.py` (font generation), the `xk_xkbpath.c3` generator,
+  and host test scripts; NOT used by the main C3 build.
+- **qemu-system-x86_64** — TCG (no KVM on guest; runs under TCG, slow).
 - **xorrisofs** — optional; enables ISO output.
 - **musl‑gcc** — optional; for cross‑building userspace tests and the dynamic GTK app.
 - **mke2fs** — for ext4 rootfs creation (build.sh calls it).

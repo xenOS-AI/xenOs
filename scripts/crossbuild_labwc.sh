@@ -18,11 +18,13 @@
 # - xkbcommon ships NO tarballs since 1.8.0 -> use the GitHub refs/tags archive.
 # - libdrm 2.4.130 dropped the `armada`/`rockchip` meson options.
 set -euo pipefail
-SYS="${SYS:-/home/timo/crossmusl/sysroot}"
-SRC="${SRC:-/home/timo/crossmusl/src}"
-ROOTFS="${ROOTFS:-/home/timo/crossmusl/rootfs-libs}/usr/lib"
-INC="/home/timo/crossmusl/linuxinc"
-HOSTPKG="/home/timo/crossmusl/hostpkg"
+. "$(cd "$(dirname "$0")/.." && pwd)/scripts/xenos_env.sh"
+XENOS_TC="$(dirname "$SYS")"
+SYS="${SYS:-$XENOS_TC/sysroot}"
+SRC="${SRC:-$XENOS_TC/src}"
+ROOTFS="${ROOTFS:-$XENOS_TC/rootfs-libs}/usr/lib"
+INC="$XENOS_TC/linuxinc"
+HOSTPKG="$XENOS_TC/hostpkg"
 mkdir -p "$HOSTPKG" "$ROOTFS"
 
 # cross pkg-config must resolve ONLY the sysroot; native scanner via hostpkg.
@@ -55,7 +57,7 @@ if [[ "${1:-all}" == all || "$1" == inputdeps ]]; then
     [ -d libevdev-1.13.1 ] || { curl -fsSL -o lev.tgz https://gitlab.freedesktop.org/libevdev/libevdev/-/archive/libevdev-1.13.1/libevdev-1.13.1.tar.gz && tar xzf lev.tgz; }
     cd libevdev-* && rm -rf build
     crossenv
-    meson setup build --cross-file=/home/timo/crossmusl/wl-cross.txt --prefix="$SYS" \
+    meson setup build --cross-file=$XENOS_TC/wl-cross.txt --prefix="$SYS" \
       -Ddefault_library=shared -Dtests=disabled -Ddocumentation=disabled \
       -Dc_args="-I$INC -mstackrealign" >/tmp/lev_cfg.log 2>&1
     ninja -C build && ninja -C build install )
@@ -80,7 +82,7 @@ if [[ "${1:-all}" == all || "$1" == inputdeps ]]; then
     [ -d libinput-1.26.2 ] || { curl -fsSL -o in.tgz https://gitlab.freedesktop.org/libinput/libinput/-/archive/1.26.2/libinput-1.26.2.tar.gz && tar xzf in.tgz; }
     cd libinput-1.26.2 && rm -rf build
     crossenv
-    meson setup build --cross-file=/home/timo/crossmusl/wl-cross.txt --prefix="$SYS" \
+    meson setup build --cross-file=$XENOS_TC/wl-cross.txt --prefix="$SYS" \
       -Ddefault_library=shared -Dlibwacom=false -Dtests=false -Ddocumentation=false \
       -Ddebug-gui=false -Dinstall-tests=false -Dc_args="-I$INC -mstackrealign" \
       >/tmp/in_cfg.log 2>&1
@@ -97,7 +99,7 @@ if [[ "${1:-all}" == all || "$1" == wlroots ]]; then
     crossenv
     # pixman renderer ONLY (gles2/vulkan off) + headless/wayland/noop backends
     # (drm/libinput/x11/session off -> no udev/seatd). -Dc_args gives sysroot includes.
-    meson setup build --cross-file=/home/timo/crossmusl/wl-cross.txt --prefix="$SYS" \
+    meson setup build --cross-file=$XENOS_TC/wl-cross.txt --prefix="$SYS" \
       -Ddefault_library=shared -Drenderers= -Dbackends= -Dallocators= \
       -Dsession=disabled -Dxwayland=disabled -Dexamples=false -Dxcb-errors=disabled \
       -Dlibliftoff=disabled -Dcolor-management=disabled \
@@ -116,7 +118,7 @@ if [[ "${1:-all}" == all || "$1" == labwc ]]; then
     crossenv
     # MUST be non-PIE (ET_EXEC): the kernel's rootfs loader maps the main at base 0
     # expecting ET_EXEC (meson builds PIE by default -> ET_DYN -> maps at vaddr 0 and hangs)
-    meson setup build --cross-file=/home/timo/crossmusl/wl-cross.txt --prefix="$SYS" \
+    meson setup build --cross-file=$XENOS_TC/wl-cross.txt --prefix="$SYS" \
       -Dxwayland=disabled -Dicon=disabled -Dsvg=disabled -Dnls=disabled \
       -Dman-pages=disabled -Dtest=disabled -Dstatic_analyzer=disabled \
       -Db_pie=false -Dc_args="-I$INC -I$SYS/include -mstackrealign" \

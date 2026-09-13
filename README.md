@@ -76,17 +76,23 @@ committed.
 
 ## Build & run
 
-Requires: `c3c` (0.8.x, `sudo pacman -S c3c` on Arch), `nasm`, `clang/ld`,
-`python3`, `qemu-system-x86_64` (`xorrisofs` for the bootable ISO).
+The build is **self-bootstrapping and user-agnostic** — no hardcoded toolchain
+paths, and missing host tools are installed for you. Just run:
 
 ```sh
-./build.sh      # assembles boot stages, compiles+links the C3 kernel, builds xenos.img AND xenos.iso
-./run.sh        # boot the graphical desktop in a QEMU window
-./run.sh serial # headless boot with the serial console in the terminal
+./scripts/bootstrap.sh      # one-time: install missing host tools + the C3 compiler
+./build.sh                  # assembles boot stages, compiles+links the kernel, builds xenos.img AND xenos.iso
+./run.sh                    # boot the graphical desktop in a QEMU window
+./run.sh serial             # headless boot with the serial console in the terminal
 
 # bootable ISO (built by ./build.sh when xorrisofs is present)
 qemu-system-x86_64 -cdrom build/xenos.iso -m 256 -boot d
 ```
+
+`bootstrap.sh` auto-detects your OS, installs the host build tools, and fetches
+c3c into a project-local `.toolchain/bin` (no root needed). `./scripts/bootstrap.sh doctor`
+reports what is present/missing; `./scripts/bootstrap.sh sysroot` also cross-builds
+the musl userspace stack (only needed for the Linux/GTK/labwc experiments).
 
 `./build.sh` produces both a raw disk image (`build/xenos.img`) and a bootable
 El Torito CD-Rom (`build/xenos.iso`). The ISO's boot image is a hand-written

@@ -11,10 +11,10 @@
 # $ROOTFS/usr/lib (the ext4 rootfs "root" dir).
 #
 #   ./crossbuild_shared.sh [all|<pkg>...]
-SYS="${SYS:-/home/timo/crossmusl/sysroot}"
-SRC="/home/timo/crossmusl/src"
-ROOTFS="${ROOTFS:-/home/timo/crossmusl/rootfs-libs}"
-INC="/home/timo/crossmusl/linuxinc"
+SYS="${SYS:-$XENOS_TC/sysroot}"
+SRC="$XENOS_TC/src"
+ROOTFS="${ROOTFS:-$XENOS_TC/rootfs-libs}"
+INC="$XENOS_TC/linuxinc"
 mkdir -p "$ROOTFS/usr/lib"
 
 PKG="${1:-all}"
@@ -48,7 +48,7 @@ shared_meson() {
     export PKG_CONFIG_LIBDIR="$SYS/lib/pkgconfig"
     export PKG_CONFIG=/usr/bin/pkg-config
     export CFLAGS="-I$SYS/include -mstackrealign"
-    [ -z "$crossfile" ] && crossfile=/home/timo/crossmusl/wl-cross-cpp.txt
+    [ -z "$crossfile" ] && crossfile=$XENOS_TC/wl-cross-cpp.txt
     meson setup build --cross-file="$crossfile" --prefix="$SYS" \
       -Ddefault_library=shared $extra \
       >/tmp/$(echo $name)_cfg.log 2>&1 || { echo "CFG_FAIL $name"; tail -15 /tmp/$(echo $name)_cfg.log; return 1; }
@@ -130,7 +130,7 @@ if [[ "$PKG" == all || "$PKG" == libpng ]]; then
 fi
 
 if [[ "$PKG" == all || "$PKG" == pixman ]]; then  # meson-only from 0.40+
-  shared_meson pixman pixman-0.43.4 /home/timo/crossmusl/wl-cross.txt \
+  shared_meson pixman pixman-0.43.4 $XENOS_TC/wl-cross.txt \
     "-Dtests=disabled -Ddemos=disabled -Dgtk=disabled"
   stage libpixman-1
 fi
@@ -167,7 +167,7 @@ if [[ "$PKG" == all || "$PKG" == wayland ]]; then  # meson; static was built; wa
     rm -rf build
     export PKG_CONFIG=/usr/bin/pkg-config
     unset PKG_CONFIG_LIBDIR   # leave the NATIVE path free so meson finds host wayland-scanner.pc
-    meson setup build --cross-file=/home/timo/crossmusl/wl-cross.txt --prefix="$SYS" \
+    meson setup build --cross-file=$XENOS_TC/wl-cross.txt --prefix="$SYS" \
       -Ddocumentation=false -Dtests=false -Ddtd_validation=false -Dscanner=false \
       -Ddefault_library=shared \
       >/tmp/wayland_cfg.log 2>&1 || { echo "WAYLAND CFG"; tail -15 /tmp/wayland_cfg.log; exit 1; }
@@ -202,7 +202,7 @@ fi
 
 # ---- glib (the GTK foundation) ----
 if [[ "$PKG" == all || "$PKG" == glib ]]; then
-  shared_meson glib glib-2.80.4 /home/timo/crossmusl/wl-cross.txt \
+  shared_meson glib glib-2.80.4 $XENOS_TC/wl-cross.txt \
     "-Dlibmount=disabled -Dselinux=disabled -Dlibelf=disabled -Dtests=false -Dinstalled_tests=false -Dgtk_doc=false -Dman=false -Ddtrace=false -Dsystemtap=false -Dintrospection=disabled -Dnls=disabled -Dbsymbolic_functions=false"
   # glib also ships the codegen tools in sysroot/bin -> RPATH them now so
   # a later (shared) GTK build can run glib-compile-resources without LD_LIBRARY_PATH
@@ -212,7 +212,7 @@ fi
 
 # ---- harfbuzz (C++) ----
 if [[ "$PKG" == all || "$PKG" == harfbuzz ]]; then
-  shared_meson harfbuzz harfbuzz-9.0.0 /home/timo/crossmusl/wl-cross-musccc.txt \
+  shared_meson harfbuzz harfbuzz-9.0.0 $XENOS_TC/wl-cross-musccc.txt \
     "-Dglib=disabled -Dfreetype=disabled -Dcairo=disabled -Dgobject=disabled -Dicu=disabled -Dtests=disabled -Ddocs=disabled -Dutilities=disabled -Dintrospection=disabled"
   stage libharfbuzz libharfbuzz-subset
 fi
@@ -248,7 +248,7 @@ if [[ "$PKG" == all || "$PKG" == gdk-pixbuf ]]; then
     export PKG_CONFIG_LIBDIR="$SYS/lib/pkgconfig"
     export PKG_CONFIG=/usr/bin/pkg-config
     export CFLAGS="-I$SYS/include -mstackrealign"
-    meson setup build --cross-file=/home/timo/crossmusl/wl-cross-cpp.txt --prefix="$SYS" \
+    meson setup build --cross-file=$XENOS_TC/wl-cross-cpp.txt --prefix="$SYS" \
       -Ddefault_library=shared -Dintrospection=disabled -Dtests=false -Dinstalled_tests=false \
       -Dman=false -Ddocs=false -Dpng=disabled -Djpeg=disabled -Dtiff=disabled -Dbuiltin_loaders=none \
       -Dgio_sniffing=false \
@@ -262,13 +262,13 @@ fi
 
 # ---- atk ----
 if [[ "$PKG" == all || "$PKG" == atk ]]; then
-  shared_meson atk atk-2.38.0 /home/timo/crossmusl/wl-cross-cpp.txt "-Dintrospection=false"
+  shared_meson atk atk-2.38.0 $XENOS_TC/wl-cross-cpp.txt "-Dintrospection=false"
   stage libatk-1.0
 fi
 
 # ---- pango ----
 if [[ "$PKG" == all || "$PKG" == pango ]]; then
-  shared_meson pango pango-1.54.0 /home/timo/crossmusl/wl-cross-cpp.txt \
+  shared_meson pango pango-1.54.0 $XENOS_TC/wl-cross-cpp.txt \
     "-Dfontconfig=enabled -Dcairo=enabled -Dfreetype=enabled -Dlibthai=disabled -Dxft=disabled -Dintrospection=disabled -Dbuild-testsuite=false -Dgtk_doc=false"
   stage libpango-1.0 libpangocairo-1.0 libpangoft2-1.0 libpangoxft-1.0
 fi
@@ -280,7 +280,7 @@ if [[ "$PKG" == all || "$PKG" == gtk ]]; then
     export PKG_CONFIG=/usr/bin/pkg-config
     export CFLAGS="-I$SYS/include -mstackrealign"
     export LDFLAGS="-L$SYS/lib -Wl,-rpath-link,$SYS/lib"
-    meson setup build --cross-file=/home/timo/crossmusl/wl-cross-cpp.txt --prefix="$SYS" \
+    meson setup build --cross-file=$XENOS_TC/wl-cross-cpp.txt --prefix="$SYS" \
       -Dc_args=-I$SYS/include\ -mstackrealign -Dcpp_args=-I$SYS/include\ -mstackrealign \
       -Ddefault_library=shared -Dx11_backend=false -Dwayland_backend=true -Dbroadway_backend=false \
       -Dintrospection=false -Dgtk_doc=false -Dman=false -Ddemos=false -Dexamples=false \

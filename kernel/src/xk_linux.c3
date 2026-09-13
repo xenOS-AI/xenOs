@@ -1972,9 +1972,17 @@ fn void linux_launch(ulong entry, ulong stack)
     if (e4_mount()) xk_puts("[linux] ext4 rootfs mounted\n");   // Phase C (secondary slave)
     wl_compositor_init();                            // Phase D: kernel Wayland compositor
     if (g_e4)   // DEBUG read: does the guest's e4_data return real rules/evdev bytes?
-    {
-        uint ri = e4_resolve("/home/timo/crossmusl/sysroot/share/X11/xkb/rules/evdev");
-        uint ri2 = e4_resolve("/home/timo/crossmusl/sysroot/share/X11/xkb/rules/base");
+    {   // XKB root matches the cross-built libxkbcommon baked config root (xk_xkbpath.c3)
+        char[512] ev; char[512] bs;
+        int e = 0; int b = 0;
+        while (g_xkb_root[e] != 0 && e < 500) { ev[e] = g_xkb_root[e]; e++; }
+        while (g_xkb_root[b] != 0 && b < 500) { bs[b] = g_xkb_root[b]; b++; }
+        char[16] se = "/rules/evdev"; char[15] sb = "/rules/base";
+        for (int z = 0; se[z] != 0 && z < 15; z++) { ev[e] = se[z]; e++; }
+        for (int z = 0; sb[z] != 0 && z < 14; z++) { bs[b] = sb[z]; b++; }
+        ev[e] = 0; bs[b] = 0;
+        uint ri = e4_resolve(&ev[0]);
+        uint ri2 = e4_resolve(&bs[0]);
         xk_puts("[xkb-dbg] evdev ino="); xk_putdec((int)ri); xk_puts(" sz="); if (ri) xk_putdec((int)e4_size(ri));
         if (ri) { char[256] tmp; uint got = 0; e4_data(ri, &tmp[0], 256, &got);
             xk_puts(" got="); xk_putdec((int)got); xk_puts(" b0=");

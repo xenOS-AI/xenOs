@@ -2,9 +2,11 @@
 # Stage the Xfce/Xwayland runtime, preserving SONAME links and runtime data.
 # The result is merged into build/rootfs by build.sh before ext4 is generated.
 set -euo pipefail
+. "$(cd "$(dirname "$0")/.." && pwd)/scripts/xenos_env.sh"
+XENOS_TC="$(dirname "$SYS")"
 
-SYS="${SYS:-/home/timo/crossmusl/sysroot}"
-ROOTFS="${ROOTFS:-/home/timo/crossmusl/rootfs-libs}"
+SYS="${SYS:-$XENOS_TC/sysroot}"
+ROOTFS="${ROOTFS:-$XENOS_TC/rootfs-libs}"
 
 required_bins=(
   xfce4-panel xfdesktop xfce4-session xfsettingsd xfconf-query

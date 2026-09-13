@@ -3,7 +3,7 @@
 # target. Boots headless + VNC, screenshots at t0 and after waiting, then
 # injects a gentle RFB move and screenshots again, checking the cursor moves.
 set -u
-cd /home/timo/Documents/xenOS
+cd "$(dirname "$0")/.."
 IMG=build/xenos.img; SER=/tmp/xm_serial.log; MON=/tmp/xm_mon.sock
 rm -f "$SER" "$MON" /tmp/x0.ppm /tmp/x1.ppm /tmp/x2.ppm
 qemu-system-x86_64 -drive file="$IMG",format=raw \
